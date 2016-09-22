@@ -1,0 +1,3735 @@
+-- Function: udl.fn_insert_udl_si_clause_legacy(integer, integer)
+
+DROP FUNCTION udl.fn_insert_udl_si_clause_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_clause_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+INSERT INTO UDL.UDL_SI_CLAUSE
+(
+UDL_SI_CLAUSE_ID,
+UDL_SI_ID,
+SOURCE_SI_ID,
+SOURCE_CLAUSE_ID,
+CLAUSE_TYPE_ID,
+CLAUSE_TYPE_DESC,
+DESCRIPTION,
+PARTITION_DATE,
+INSERTED_PROCESS_ID,
+INSERTED_DATE,
+UPDATED_PROCESS_ID,
+UPDATED_DATE
+)
+
+(
+SELECT
+nextval('udl.udl_si_clause_seq'),
+u_si.UDL_SI_ID,
+clause.shipping_instruction_id,
+clause.CLAUSE_ID,
+clause.CLAUSE_TYPE_ID,
+data_map.MAPPED_VALUE,
+clause.DESCRIPTION,
+SHIP_INSTRN.CREATION_DATE,
+lv_process_id,
+current_timestamp,
+lv_process_id,
+current_timestamp
+from 
+ (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTRN
+
+inner join
+stg_inttra.stg_si_clause CLAUSE
+	on SHIP_INSTRN.SHIPPING_INSTRUCTION_ID=CLAUSE.SHIPPING_INSTRUCTION_ID
+	and SHIP_INSTRN.batch_id=lv_batch_id
+	and CLAUSE.batch_id=lv_batch_id
+
+inner join 
+udl.udl_si U_SI
+	on clause.shipping_instruction_ID = U_SI.SOURCE_SI_ID
+	AND U_SI.SOURCE_REVISION_DATE = SHIP_INSTRN.LAST_MODIFIED_DATE 
+	AND U_SI.STATUS_DESC IN ('Original' , 'Amendment')
+	and u_si.DATA_SOURCE = 'LEGACY'
+
+left outer join 
+stg_inttra.stg_etl_data_map data_map
+	on CLAUSE.CLAUSE_TYPE_ID =DATA_MAP.VALUE
+	and DATA_MAP.etl_DOMAIN_ID =7
+	and DATA_MAP.TABLE_NAME = 'SI_CLAUSE_TYPE'
+
+
+);
+GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+SET ERROR_TEXT = lv_error_msg
+WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_CLAUSE';
+RETURN -1; 
+END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_clause_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_clause_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_clause_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_company_role_legacy(integer, integer)
+
+DROP FUNCTION IF Exists udl.fn_insert_udl_si_company_role_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_company_role_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;	
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_COMPANY_ROLE
+	     ( 
+		UDL_COMPANY_ROLE_ID
+		,SECURITY_ID
+		,COMPANY_ID
+		,COMPANY_ROLE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_COMPANY_ROLE_SEQ')
+		,UDS.SECURITY_ID
+		,SEC.COMPANY_ID
+		,SEC.COMPANY_ROLE
+		,SEC.CREATION_DATE
+	   	,lv_process_id
+		,CURRENT_TIMESTAMP
+	        ,lv_process_id
+	        ,CURRENT_TIMESTAMP
+  
+	      FROM 
+	        (
+		SELECT
+		    SECURITY_ROLE_CODE
+                    ,MAX(SI.CREATION_DATE) AS CREATION_DATE
+                    ,SIC.COMPANY_ID COMPANY_ID 
+                    ,SIAT.DESCRIPTION COMPANY_ROLE
+
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SI
+		
+	        INNER JOIN 
+	        STG_INTTRA.STG_SI_COMPANY SIC
+	        ON SI.SHIPPING_INSTRUCTION_ID = SIC.SHIPPING_INSTRUCTION_ID
+		AND SIC.COMPANY_ID IS NOT NULL
+	        AND SI.BATCH_ID = lv_batch_id
+	        AND SIC.BATCH_ID = lv_batch_id
+
+ 	        LEFT OUTER JOIN 
+	        STG_INTTRA.STG_SI_ACTIVITY_TYPE SIAT
+	        ON SIAT.ACTIVITY_TYPE_ID = SIC.ACTIVITY_TYPE_ID
+	
+		LEFT OUTER JOIN 
+			(
+			SELECT 
+			    B.SHIPPING_INSTRUCTION_ID
+			    ,TRIM(TRAILING '_' FROM STRING_AGG (B.COMPANY_ID||'_'||B.DESCRIPTION, '_' ORDER BY B.COMPANY_ID,B.DESCRIPTION)) AS SECURITY_ROLE_CODE
+			FROM 
+			   (
+			   SELECT 
+			       DISTINCT COMPANY_ID
+			       ,DESCRIPTION
+			       ,SIC.SHIPPING_INSTRUCTION_ID
+			   FROM STG_INTTRA.STG_SI_COMPANY SIC
+			   INNER JOIN 
+			   (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SI
+			   ON SI.SHIPPING_INSTRUCTION_ID = SIC.SHIPPING_INSTRUCTION_ID
+			   AND SIC.COMPANY_ID IS NOT NULL
+			   AND SI.BATCH_ID = lv_batch_id
+	       		   AND SIC.BATCH_ID = lv_batch_id	
+			   INNER JOIN 
+			   STG_INTTRA.STG_SI_ACTIVITY_TYPE SIAT
+			   ON SIAT.ACTIVITY_TYPE_ID = SIC.ACTIVITY_TYPE_ID
+			   )B 
+			GROUP BY B.SHIPPING_INSTRUCTION_ID
+			)A 
+		ON A.SHIPPING_INSTRUCTION_ID = SI.SHIPPING_INSTRUCTION_ID
+		GROUP BY SECURITY_ROLE_CODE
+			 ,COMPANY_ID
+			 ,COMPANY_ROLE
+		)SEC
+
+		INNER JOIN 
+		UDL.UDL_SECURITY UDS
+		ON UDS.SECURITY_ROLE_CODE = SEC.SECURITY_ROLE_CODE 
+
+		LEFT OUTER JOIN 
+		UDL.UDL_COMPANY_ROLE UCR 
+                ON SEC.COMPANY_ID = UCR.COMPANY_ID
+                AND UDS.SECURITY_ID = UCR.SECURITY_ID
+		AND SEC.COMPANY_ROLE = UCR.COMPANY_ROLE
+		WHERE UCR.COMPANY_ID IS NULL
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_COMPANY_ROLE';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_company_role_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_company_role_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_company_role_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_container_legacy(integer, integer)
+
+DROP FUNCTION IF EXISTS udl.fn_insert_udl_si_container_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_container_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+
+LV_INSRT_ROWCNT INT := -1;
+LV_ERROR_MSG  TEXT;
+LV_BATCH_ID ALIAS FOR $1;
+LV_PROCESS_ID ALIAS FOR $2;
+lv_teu_factor INT :=1;
+
+BEGIN
+
+/*  INSERTING TO THE UDL TABLE  */
+
+INSERT INTO UDL.UDL_SI_CONTAINER
+(
+UDL_SI_CONTAINER_ID,
+UDL_SI_ID,
+SOURCE_CONTAINER_ID,
+SOURCE_SI_ID,
+TEU_COUNT,
+CONTAINER_PROFILE_CODE,
+CONTAINER_TYPE,
+CONTAINER_NUMBER,
+SEQUENCE_NBR,
+REEFER_IND,
+WEIGHT,
+WEIGHT_UOM_ID,
+WEIGHT_UOM_DESC,
+GROSS_VOLUME,
+GROSS_VOLUME_UOM_ID,
+GROSS_VOLUME_UOM_DESC,
+TRANSPORT_TEMP,
+TRANSPORT_TEMP_UOM_ID,
+TRANSPORT_TEMP_UOM_DESC,
+TARE_WEIGHT,
+TARE_WEIGHT_UOM_ID,
+TARE_WEIGHT_UOM_DESC,
+CARRIER_SEAL_LIST,
+CUSTOMS_SEAL_LIST,
+SHIPPER_SEAL_LIST,
+TERMINAL_OPERATOR_SEAL_LIST,
+VETERINARY_SEAL_LIST,
+PARTITION_DATE,
+INSERTED_PROCESS_ID,
+INSERTED_DATE,
+UPDATED_PROCESS_ID,
+UPDATED_DATE
+)
+(
+select  
+NEXTVAL('udl.udl_si_container_seq'),
+u_si.UDL_SI_ID,
+CONTAINER.CONTAINER_ID,
+CONTAINER.SHIPPING_INSTRUCTION_ID,
+COALESCE(UCONT.TEU
+	,CASE 
+		WHEN (CAST(SUBSTRING(BCT.CONTAINER_LIST_HEIGHT FROM '[0-9]+') AS NUMERIC)*12 + 
+		COALESCE(CAST(SUBSTRING(BCT.CONTAINER_LIST_HEIGHT FROM '%[^0-9]*[0-9]+[^0-9]+#"[0-9]+#"%' FOR '#') AS NUMERIC),0))/12 >= 9.5 
+		THEN (CAST(SUBSTRING(BCT.CONTAINER_LIST_LENGTH FROM '[0-9]+') AS NUMERIC)*12 + 
+		COALESCE(CAST(SUBSTRING(BCT.CONTAINER_LIST_LENGTH FROM '%[^0-9]*[0-9]+[^0-9]+#"[0-9]+#"%' FOR '#') AS NUMERIC),0))/12/20* lv_teu_factor
+		ELSE (CAST(SUBSTRING(BCT.CONTAINER_LIST_LENGTH FROM '[0-9]+') AS NUMERIC)*12 + 
+		COALESCE(CAST(SUBSTRING(BCT.CONTAINER_LIST_LENGTH FROM '%[^0-9]*[0-9]+[^0-9]+#"[0-9]+#"%' FOR '#') AS NUMERIC),0))/12/20
+ 	 END
+	,CASE 
+	        WHEN container_profile.CONTAINER_HEIGHT >= 9.5
+                THEN (container_profile.CONTAINER_LENGTH/20)*lv_teu_factor 
+                ELSE (container_profile.CONTAINER_LENGTH/20)
+         END
+	) AS TEU_COUNT,
+CONTAINER.CONTAINER_PROFILE_CODE,
+container_profile.container_type,
+container.container_initial || container.container_number,
+CONTAINER1.CNT_SEQ  AS SEQUENCE_NBR,
+container.REEFER_UNACTIVE_FLAG,
+container.gross_weight,
+container.GROSS_WEIGHT_UOM_ID,
+DATA_MAP1.MAPPED_VALUE,
+container.volume,
+container.VOLUME_UOM_ID,
+DATA_MAP2.MAPPED_VALUE,
+container.REEFER_TEMP,
+container.REEFER_TEMP_UOM_ID,
+DATA_MAP3.MAPPED_VALUE,
+container.TARE_WEIGHT,
+container.TARE_WEIGHT_UOM_ID,
+DATA_MAP4.MAPPED_VALUE,
+container_seal1.SEAL_NUMBER,
+container_seal2.SEAL_NUMBER,
+container_seal3.SEAL_NUMBER,
+container_seal4.SEAL_NUMBER,
+container_seal5.SEAL_NUMBER,
+shipping_instruction.CREATION_DATE,
+LV_PROCESS_ID,
+CURRENT_TIMESTAMP,
+LV_PROCESS_ID,
+CURRENT_TIMESTAMP
+
+from 
+
+ (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) shipping_instruction
+
+INNER JOIN 
+stg_inttra.stg_si_container CONTAINER
+	ON CONTAINER.SHIPPING_INSTRUCTION_ID = SHIPPING_INSTRUCTION.SHIPPING_INSTRUCTION_ID
+	AND shipping_instruction.BATCH_ID= LV_BATCH_ID
+	AND CONTAINER.BATCH_ID= LV_BATCH_ID
+
+INNER JOIN
+UDL.UDL_SI u_si
+	ON u_si.SOURCE_SI_ID = CONTAINER.shipping_instruction_ID AND DATA_SOURCE = 'LEGACY'
+	AND u_si.source_revision_date = shipping_instruction.last_modified_date
+	AND u_si.status_desc IN ('Original','Amendment')
+	
+LEFT OUTER JOIN
+stg_inttra.stg_ts_container_profile container_profile	 
+	ON upper(container.container_profile_code) = upper(container_profile.container_profile_code)
+
+LEFT OUTER JOIN
+STG_INTTRA.STG_BK_CONTAINER_TYPE BCT
+	ON UPPER(CONTAINER.CONTAINER_PROFILE_CODE) = UPPER(BCT.CONTAINER_TYPE_CODE)
+
+LEFT OUTER JOIN	
+stg_inttra.stg_etl_data_map data_map1
+	ON container.GROSS_WEIGHT_UOM_ID= DATA_MAP1.VALUE
+	AND DATA_MAP1.ETL_DOMAIN_ID =7 
+	AND DATA_MAP1.TABLE_NAME = 'UOM_CATEGORY_VALUE'
+
+LEFT OUTER JOIN	
+stg_inttra.stg_etl_data_map data_map2
+	ON container.VOLUME_UOM_ID= DATA_MAP2.VALUE
+	AND DATA_MAP2.ETL_DOMAIN_ID =7 
+	AND DATA_MAP2.TABLE_NAME = 'UOM_CATEGORY_VALUE'
+
+LEFT OUTER JOIN	
+stg_inttra.stg_etl_data_map data_map3 
+	ON container.REEFER_TEMP_UOM_ID= DATA_MAP3.VALUE
+	AND DATA_MAP3.ETL_DOMAIN_ID =7 
+	AND DATA_MAP3.TABLE_NAME = 'UOM_CATEGORY_VALUE'
+
+LEFT OUTER JOIN	
+stg_inttra.stg_etl_data_map data_map4 
+	ON container.TARE_WEIGHT_UOM_ID= DATA_MAP4.VALUE
+	AND DATA_MAP4.ETL_DOMAIN_ID =7 
+	AND DATA_MAP4.TABLE_NAME = 'UOM_CATEGORY_VALUE'
+ 
+LEFT OUTER JOIN 
+(SELECT container_id, shipping_instruction_id, array_to_string(array_agg(seal_number order by seal_number asc), ',')::varchar(400) seal_number
+FROM stg_inttra.stg_si_container_seal seal1
+where seal1.seal_issuer_type_id=1
+AND seal1.BATCH_ID= LV_BATCH_ID
+GROUP BY seal1.container_id, seal1.shipping_instruction_id) container_seal1
+                                ON container_seal1.CONTAINER_ID = CONTAINER.CONTAINER_ID 
+                                and container_seal1.shipping_instruction_id = CONTAINER.shipping_instruction_id 
+ 
+LEFT OUTER JOIN 
+(SELECT container_id, shipping_instruction_id, array_to_string(array_agg(seal_number order by seal_number asc), ',')::varchar(400) seal_number
+FROM stg_inttra.stg_si_container_seal seal2
+where seal2.seal_issuer_type_id=2
+AND seal2.BATCH_ID= LV_BATCH_ID
+GROUP BY seal2.container_id,seal2.shipping_instruction_id) container_seal2
+                                ON container_seal2.CONTAINER_ID = CONTAINER.CONTAINER_ID 
+                                and container_seal2.shipping_instruction_id = CONTAINER.shipping_instruction_id 
+ 
+LEFT OUTER JOIN 
+(SELECT container_id, shipping_instruction_id, array_to_string(array_agg(seal_number order by seal_number asc), ',')::varchar(400) seal_number
+FROM stg_inttra.stg_si_container_seal seal3
+where seal3.seal_issuer_type_id=3
+AND seal3.BATCH_ID= LV_BATCH_ID
+GROUP BY seal3.container_id,seal3.shipping_instruction_id) container_seal3
+                                ON container_seal3.CONTAINER_ID = CONTAINER.CONTAINER_ID 
+                                and container_seal3.shipping_instruction_id = CONTAINER.shipping_instruction_id                      
+ 
+LEFT OUTER JOIN 
+(SELECT container_id, shipping_instruction_id, array_to_string(array_agg(seal_number order by seal_number asc), ',')::varchar(400) seal_number
+FROM stg_inttra.stg_si_container_seal seal4
+where seal4.seal_issuer_type_id=4
+AND seal4.BATCH_ID= LV_BATCH_ID
+GROUP BY seal4.container_id,seal4.shipping_instruction_id) container_seal4
+                                ON container_seal4.CONTAINER_ID = CONTAINER.CONTAINER_ID 
+                                and container_seal4.shipping_instruction_id = CONTAINER.shipping_instruction_id 
+ 
+LEFT OUTER JOIN 
+(SELECT container_id, shipping_instruction_id, array_to_string(array_agg(seal_number order by seal_number asc), ',')::varchar(400) seal_number
+FROM stg_inttra.stg_si_container_seal seal5 
+where seal5.seal_issuer_type_id=5
+AND seal5.BATCH_ID= LV_BATCH_ID
+GROUP BY seal5.container_id,seal5.shipping_instruction_id) container_seal5
+                                ON container_seal5.CONTAINER_ID = CONTAINER.CONTAINER_ID 
+                                and container_seal5.shipping_instruction_id = CONTAINER.shipping_instruction_id 
+								
+									
+LEFT OUTER JOIN 
+UDL.UDL_CONTAINER UCONT
+ON CONTAINER.CONTAINER_INITIAL || CONTAINER.CONTAINER_NUMBER  = UCONT.CONTAINER_NUMBER
+LEFT OUTER JOIN
+(SELECT A.BATCH_ID, A.CONTAINER_ID,A.SHIPPING_INSTRUCTION_ID,RANK() OVER(PARTITION BY A.SHIPPING_INSTRUCTION_ID ORDER BY A.CONTAINER_ID) CNT_SEQ 
+FROM STG_INTTRA.STG_SI_CONTAINER A
+WHERE A.BATCH_ID = lv_batch_id) CONTAINER1
+ON  CONTAINER.CONTAINER_ID = CONTAINER1.CONTAINER_ID
+AND CONTAINER.BATCH_ID = CONTAINER1.BATCH_ID
+);
+
+GET DIAGNOSTICS LV_INSRT_ROWCNT = ROW_COUNT;
+
+RETURN LV_INSRT_ROWCNT;
+
+/*  WHEN ERRORS  */
+
+EXCEPTION WHEN OTHERS THEN LV_ERROR_MSG = SQLERRM;
+UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+SET ERROR_TEXT = LV_ERROR_MSG
+WHERE BATCH_ID = LV_BATCH_ID AND TARGET_NAME = 'UDL_SI_CONTAINER';
+RETURN -1; 
+
+END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_container_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_container_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_container_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_container_line_item_legacy(integer, integer)
+
+ DROP FUNCTION IF EXISTS udl.fn_insert_udl_si_container_line_item_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_container_line_item_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2; 
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_CONTAINER_LINE_ITEM
+	     (
+		UDL_SI_CONTAINER_LINE_ITEM_ID,
+		UDL_SI_LINE_ITEM_ID,
+		UDL_CONTAINER_ID,
+		UDL_SI_ID,
+		SOURCE_CONTAINER_LINE_ITEM_ID,
+		SOURCE_LINE_ITEM_ID,
+		SOURCE_CONTAINER_ID,
+		PACKAGE_TYPE_ID,
+		PACKAGE_TYPE_DESC,
+		PACKAGE_COUNT,
+		WEIGHT,
+		WEIGHT_UOM_ID,
+		WEIGHT_UOM_DESC ,
+		GROSS_VOLUME,
+		GROSS_VOLUME_UOM_ID,
+		GROSS_VOLUME_UOM_DESC,
+		GROSS_WEIGHT,
+		GROSS_WEIGHT_UOM_ID,
+		GROSS_WEIGHT_UOM_DESC,
+		PARTITION_DATE,
+		INSERTED_PROCESS_ID,
+		INSERTED_DATE,
+		UPDATED_PROCESS_ID,
+		UPDATED_DATE
+	     )
+		
+	     (
+		SELECT 	
+		NEXTVAL('UDL.UDL_SI_CONTAINER_LINE_ITEM_SEQ') 	,	
+		USLI.UDL_SI_LINE_ITEM_ID,
+		USC.UDL_SI_CONTAINER_ID,
+		US.UDL_SI_ID,
+		SCM.CONTAINER_COMMODITY_MAP_ID,
+		SCM.COMMODITY_ID,
+		SCM.CONTAINER_ID,
+		SCM.PACKAGE_TYPE_ID,
+		ETL1.MAPPED_VALUE,
+		SCM.PACKAGE_COUNT,
+		SCM.GROSS_WEIGHT,
+		SCM.GROSS_WEIGHT_UOM_ID,
+		ETL2.MAPPED_VALUE,
+		SCM.VOLUME,
+		SCM.VOLUME_UOM_ID,
+		ETL3.MAPPED_VALUE,
+		NULL,
+		NULL,
+		NULL,
+		USLI.PARTITION_DATE,
+		lv_process_id,
+		CURRENT_TIMESTAMP,
+		lv_process_id,
+		CURRENT_TIMESTAMP
+		FROM
+			(Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHI
+		INNER JOIN 
+			STG_INTTRA.STG_SI_COMMODITY  CMM
+		ON	CMM.SHIPPING_INSTRUCTION_ID = SHI.SHIPPING_INSTRUCTION_ID 
+		AND	SHI.BATCH_ID = lv_batch_id
+		AND	CMM.BATCH_ID = lv_batch_id
+		INNER JOIN
+			STG_INTTRA.STG_SI_CONTAINER SC
+		ON	SC.SHIPPING_INSTRUCTION_ID = SHI.SHIPPING_INSTRUCTION_ID
+		AND	SC.BATCH_ID = lv_batch_id
+		INNER JOIN
+			STG_INTTRA.STG_SI_CONTAINER_COMMODITY_MAP SCM
+		ON	SCM.CONTAINER_ID = SC.CONTAINER_ID
+		AND	SCM.COMMODITY_ID = CMM.COMMODITY_ID
+		AND	SCM.BATCH_ID = lv_batch_id
+		INNER JOIN
+			UDL.UDL_SI US
+		ON	SC.SHIPPING_INSTRUCTION_ID = US.SOURCE_SI_ID
+		AND     US.SOURCE_REVISION_DATE = SHI.LAST_MODIFIED_DATE 
+	        AND     US.STATUS_DESC in ('Original','Amendment')
+		INNER JOIN
+			UDL.UDL_SI_LINE_ITEM USLI
+		ON	US.SOURCE_SI_ID = USLI.SOURCE_SI_ID
+		AND	USLI.UDL_SI_ID = US.UDL_SI_ID
+		AND	US.DATA_SOURCE = 'LEGACY'
+		INNER JOIN
+			UDL.UDL_SI_CONTAINER USC
+		ON	US.SOURCE_SI_ID = USC.SOURCE_SI_ID
+		AND	US.UDL_SI_ID    = USC.UDL_SI_ID		
+		LEFT OUTER JOIN
+			STG_INTTRA.STG_ETL_DATA_MAP ETL1
+		ON	SCM.PACKAGE_TYPE_ID = ETL1.VALUE
+		AND	ETL1.ETL_DOMAIN_ID =7
+		AND	ETL1.TABLE_NAME = 'SI_PACKAGE_TYPE'
+		LEFT OUTER JOIN
+			STG_INTTRA.STG_ETL_DATA_MAP ETL2
+		ON	SCM.GROSS_WEIGHT_UOM_ID = ETL2.VALUE
+		AND	ETL2.ETL_DOMAIN_ID = 7
+		AND	ETL2.TABLE_NAME = 'UOM_CATEGORY_VALUE'
+		LEFT OUTER JOIN
+			STG_INTTRA.STG_ETL_DATA_MAP ETL3
+		ON	SCM.VOLUME_UOM_ID = ETL3.VALUE
+		AND	ETL3.ETL_DOMAIN_ID = 7
+		AND	ETL3.TABLE_NAME = 'UOM_CATEGORY_VALUE'
+	     );
+	
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_CONTAINER_LINE_ITEM';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_container_line_item_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_container_line_item_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_container_line_item_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_current_legacy(integer, integer)
+
+ DROP FUNCTION IF EXISTS udl.fn_insert_udl_si_current_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_current_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+----lv_upd_rowcnt INT := -1;  --OCT MR(2014)
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+	DROP TABLE IF EXISTS UDL_SI_CURRENT_TEMP;
+
+	CREATE TEMPORARY TABLE UDL_SI_CURRENT_TEMP
+	(
+		ORIGINAL_SI_ID BIGINT		
+		,FIRST_UDL_SI_ID BIGINT
+		,LAST_UDL_SI_ID BIGINT
+		,TOTAL_REVISIONS INT
+		,FIRST_AMENDED_REVISION_ID BIGINT
+		,LAST_AMENDED_REVISION_ID BIGINT
+		,LAST_AMENDED_REVISION_DATE TIMESTAMP WITHOUT TIME ZONE
+		,LAST_AMENDED_SECURITY_ID BIGINT
+	)
+	;
+
+	INSERT INTO UDL_SI_CURRENT_TEMP
+        (	
+		ORIGINAL_SI_ID
+		,FIRST_UDL_SI_ID
+		,LAST_UDL_SI_ID
+		,TOTAL_REVISIONS
+		,FIRST_AMENDED_REVISION_ID
+		,LAST_AMENDED_REVISION_ID
+		,LAST_AMENDED_REVISION_DATE
+		,LAST_AMENDED_SECURITY_ID
+	)
+	(
+	SELECT	SID.ORIGINAL_SI_ID
+		,SID.FIRST_UDL_SI_ID
+		,SID.LAST_UDL_SI_ID
+		,SID.TOTAL_REVISIONS
+		,FAMND.FIRST_AMENDED_REVISION_ID
+		,LAMND.LAST_AMENDED_REVISION_ID
+		,LAMND.LAST_AMENDED_REVISION_DATE
+		,LAMND.LAST_AMENDED_SECURITY_ID
+	FROM
+	(
+	SELECT 
+		USI.ORIGINAL_SI_ID  AS ORIGINAL_SI_ID
+		,LST.U_MIN   AS FIRST_UDL_SI_ID	  
+		,LST.U_MAX   AS LAST_UDL_SI_ID
+		,LST.SEQ_MAX AS TOTAL_REVISIONS
+	FROM 
+		UDL.UDL_SI USI
+	INNER JOIN 
+		STG_INTTRA.STG_SHIPPING_INSTRUCTION SI
+	ON 	USI.ORIGINAL_SI_ID = SI.SHIPPING_INSTRUCTION_ID
+	AND 	SI.BATCH_ID = lv_batch_id
+			 
+	LEFT OUTER JOIN  
+	(	
+		SELECT 	ORIGINAL_SI_ID,
+			MAX(CASE WHEN MAXUDL=1 THEN UDL_SI_ID END) AS U_MAX,
+			MAX(CASE WHEN MINUDL=1 THEN UDL_SI_ID END) AS U_MIN,
+			MAX(CASE WHEN MAXSEQ=1 THEN SEQUENCE END) AS SEQ_MAX
+		FROM (
+			SELECT X.ORIGINAL_SI_ID,X.UDL_SI_ID,X.SOURCE_REVISION_DATE,X.SEQUENCE,
+				RANK() OVER (PARTITION BY X.ORIGINAL_SI_ID  ORDER BY SOURCE_REVISION_DATE DESC,UDL_SI_ID DESC) MAXUDL,
+				RANK() OVER (PARTITION BY X.ORIGINAL_SI_ID  ORDER BY SOURCE_REVISION_DATE,UDL_SI_ID) MINUDL,
+				RANK() OVER (PARTITION BY X.ORIGINAL_SI_ID  ORDER BY SEQUENCE DESC) MAXSEQ
+			FROM
+			UDL.UDL_SI X  
+			GROUP BY X.ORIGINAL_SI_ID,X.SOURCE_REVISION_DATE,X.UDL_SI_ID,X.SEQUENCE
+		     ) MAXMIN
+		GROUP BY MAXMIN.ORIGINAL_SI_ID 
+	) LST							
+	ON 	USI.ORIGINAL_SI_ID = LST.ORIGINAL_SI_ID		  
+	GROUP BY USI.ORIGINAL_SI_ID,LST.U_MAX,LST.U_MIN,LST.SEQ_MAX
+	) SID
+
+	LEFT OUTER JOIN
+	(
+	SELECT 	
+		A.UDL_SI_ID LAST_AMENDED_REVISION_ID
+		,A.ORIGINAL_SI_ID
+		,A.SOURCE_REVISION_DATE LAST_AMENDED_REVISION_DATE
+		,A.SECURITY_ID LAST_AMENDED_SECURITY_ID
+		FROM 	
+			(
+			SELECT 
+			RANK () OVER (PARTITION BY X.ORIGINAL_SI_ID ORDER BY SOURCE_REVISION_DATE DESC,UDL_SI_ID DESC) RN
+			,ORIGINAL_SI_ID
+			,UDL_SI_ID
+			,SOURCE_REVISION_DATE
+			,SECURITY_ID
+			FROM UDL.UDL_SI X
+			WHERE UPPER(STATUS_DESC) = 'AMENDMENT'
+			) A
+	WHERE A.RN = 1 
+	) LAMND
+	ON	LAMND.ORIGINAL_SI_ID = SID.ORIGINAL_SI_ID
+
+	LEFT OUTER JOIN
+	(
+	SELECT 
+		A.UDL_SI_ID FIRST_AMENDED_REVISION_ID
+		,A.ORIGINAL_SI_ID
+		FROM 	
+			(
+			SELECT 
+			RANK () OVER (PARTITION BY X.ORIGINAL_SI_ID ORDER BY SOURCE_REVISION_DATE,UDL_SI_ID) RN
+			,ORIGINAL_SI_ID
+			,UDL_SI_ID
+			FROM UDL.UDL_SI X
+			WHERE UPPER(STATUS_DESC) = 'AMENDMENT'
+			) A 
+	WHERE A.RN = 1 
+	) FAMND
+	ON	FAMND.ORIGINAL_SI_ID = SID.ORIGINAL_SI_ID
+	);		   
+		     
+	DROP TABLE IF EXISTS UDL_SI_CURRENT_DUMMY;
+
+	CREATE TEMPORARY TABLE UDL_SI_CURRENT_DUMMY
+	     (
+		ORIGINAL_SI_ID			BIGINT
+		,SOURCE_SI_ID			BIGINT
+		,FIRST_UDL_SI_ID		BIGINT
+		,LAST_UDL_SI_ID			BIGINT
+		,LAST_SHIPMENT_ID		CHARACTER VARYING(35)
+		,LAST_CUSTOMER_DATE_OF_ISSUE	TIMESTAMP WITHOUT TIME ZONE
+		,CREATION_DATE			TIMESTAMP WITHOUT TIME ZONE
+		,PURGED_FLAG			SMALLINT
+		,DELETED_FLAG			SMALLINT
+		,TOTAL_REVISIONS		INT
+		,LAST_SECURITY_ID		BIGINT
+		,FIRST_REVISION_DATE		TIMESTAMP WITHOUT TIME ZONE
+		,LAST_REVISION_DATE		TIMESTAMP WITHOUT TIME ZONE
+		,LAST_STATUS			CHARACTER VARYING(100)	
+		,LAST_CARRIER_COMPANY_ID BIGINT
+		,LAST_REQUESTER_COMPANY_ID BIGINT NOT NULL
+		,FIRST_AMENDED_REVISION_ID	BIGINT 	
+		,LAST_AMENDED_REVISION_ID	BIGINT
+		,LAST_AMENDED_REVISION_DATE	TIMESTAMP WITHOUT TIME ZONE
+		,LAST_AMENDED_SECURITY_ID	BIGINT 	
+		,LAST_MAIN_POL_GEO_ID		INTEGER
+		,LAST_MAIN_POD_GEO_ID		INTEGER
+		,LAST_MAIN_PLOR_GEO_ID		INTEGER
+		,LAST_MAIN_PLOD_GEO_ID		INTEGER
+		,TOTAL_CONTAINER_COUNT		INTEGER
+		,SINGLE_CARRIER_REFERENCE	CHARACTER VARYING(50)
+		,PARTITION_DATE			TIMESTAMP WITHOUT TIME ZONE
+		,INSERTED_PROCESS_ID		INT
+		,INSERTED_DATE			TIMESTAMP WITHOUT TIME ZONE
+		,UPDATED_PROCESS_ID		INT
+		,UPDATED_DATE			TIMESTAMP WITHOUT TIME ZONE
+	     )
+	;
+
+	INSERT INTO UDL_SI_CURRENT_DUMMY
+	     (
+		ORIGINAL_SI_ID
+		,SOURCE_SI_ID
+		,FIRST_UDL_SI_ID
+		,LAST_UDL_SI_ID
+		,LAST_SHIPMENT_ID
+		,LAST_CUSTOMER_DATE_OF_ISSUE
+		,CREATION_DATE
+		,PURGED_FLAG
+		,DELETED_FLAG
+		,TOTAL_REVISIONS
+		,LAST_SECURITY_ID
+		,FIRST_REVISION_DATE
+		,LAST_REVISION_DATE
+		,LAST_STATUS
+		,LAST_CARRIER_COMPANY_ID
+		,LAST_REQUESTER_COMPANY_ID
+		,FIRST_AMENDED_REVISION_ID
+		,LAST_AMENDED_REVISION_ID
+		,LAST_AMENDED_REVISION_DATE
+		,LAST_AMENDED_SECURITY_ID
+		,LAST_MAIN_POL_GEO_ID
+		,LAST_MAIN_POD_GEO_ID
+		,LAST_MAIN_PLOR_GEO_ID
+		,LAST_MAIN_PLOD_GEO_ID
+		,TOTAL_CONTAINER_COUNT
+		,SINGLE_CARRIER_REFERENCE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+	     (
+		SELECT DISTINCT
+		USIC.ORIGINAL_SI_ID
+		,USIC.SOURCE_SI_ID
+		,USIC.FIRST_UDL_SI_ID
+		,USIC.LAST_UDL_SI_ID
+		,USIC.LAST_SHIPMENT_ID
+		,USIC.LAST_CUSTOMER_DATE_OF_ISSUE
+		,USIC.CREATION_DATE
+		,0
+		,0
+		,USIC.TOTAL_REVISIONS
+		,USIC.LAST_SECURITY_ID
+		,USIC.FIRST_REVISION_DATE
+		,USIC.LAST_REVISION_DATE
+		,USIC.LAST_STATUS
+		,USIC.LAST_CARRIER_COMPANY_ID 
+		,USIC.LAST_REQUESTER_COMPANY_ID
+		,USIC.FIRST_AMENDED_REVISION_ID
+		,USIC.LAST_AMENDED_REVISION_ID
+		,USIC.LAST_AMENDED_REVISION_DATE
+		,USIC.LAST_AMENDED_SECURITY_ID
+		,USIC.LAST_MAIN_POL_GEO_ID
+		,USIC.LAST_MAIN_POD_GEO_ID
+		,USIC.LAST_MAIN_PLOR_GEO_ID
+		,USIC.LAST_MAIN_PLOD_GEO_ID
+		,USIC.TOTAL_CONTAINER_COUNT
+		,SCR.SINGLE_CARRIER_REFERENCE
+		,USIC.SOURCE_CREATION_DATE
+		,lv_process_id
+		,CURRENT_TIMESTAMP 
+		,lv_process_id
+		,CURRENT_TIMESTAMP 
+
+		FROM 
+		   (
+		    SELECT
+		    LAST_USI.ORIGINAL_SI_ID ORIGINAL_SI_ID
+		    ,LAST_USI.SOURCE_SI_ID SOURCE_SI_ID
+		    ,FIRST_USI.UDL_SI_ID FIRST_UDL_SI_ID
+		    ,LAST_USI.UDL_SI_ID LAST_UDL_SI_ID
+		    ,LAST_USI.SHIPMENT_ID LAST_SHIPMENT_ID
+		    ,LAST_USI.DATE_OF_ISSUE LAST_CUSTOMER_DATE_OF_ISSUE
+		    ,LAST_USI.SOURCE_CREATION_DATE CREATION_DATE
+	   	    ,TMP.TOTAL_REVISIONS TOTAL_REVISIONS
+		    ,LAST_USI.SECURITY_ID LAST_SECURITY_ID
+		    ,FIRST_USI.SOURCE_REVISION_DATE FIRST_REVISION_DATE
+		    ,LAST_USI.SOURCE_REVISION_DATE LAST_REVISION_DATE
+		    ,LAST_USI.STATUS_DESC LAST_STATUS
+		    ,LAST_USI.CARRIER_COMPANY_ID LAST_CARRIER_COMPANY_ID
+		    ,LAST_USI.REQUESTER_COMPANY_ID LAST_REQUESTER_COMPANY_ID
+		    ,TMP.FIRST_AMENDED_REVISION_ID FIRST_AMENDED_REVISION_ID
+		    ,TMP.LAST_AMENDED_REVISION_ID LAST_AMENDED_REVISION_ID
+		    ,TMP.LAST_AMENDED_REVISION_DATE LAST_AMENDED_REVISION_DATE
+		    ,TMP.LAST_AMENDED_SECURITY_ID LAST_AMENDED_SECURITY_ID
+		    ,LAST_USI.MAIN_POL_GEO_ID LAST_MAIN_POL_GEO_ID
+		    ,LAST_USI.MAIN_POD_GEO_ID LAST_MAIN_POD_GEO_ID
+		    ,LAST_USI.MAIN_PLOR_GEO_ID LAST_MAIN_PLOR_GEO_ID
+		    ,LAST_USI.MAIN_PLOD_GEO_ID LAST_MAIN_PLOD_GEO_ID	
+		    ,LAST_USI.TOTAL_CONTAINER_COUNT TOTAL_CONTAINER_COUNT
+		    ,LAST_USI.SOURCE_CREATION_DATE SOURCE_CREATION_DATE
+
+		    FROM		     
+		    UDL_SI_CURRENT_TEMP TMP
+ 
+		    LEFT OUTER JOIN 
+		    UDL.UDL_SI LAST_USI
+		    ON LAST_USI.UDL_SI_ID = TMP.LAST_UDL_SI_ID
+
+		    LEFT OUTER JOIN 
+ 		    UDL.UDL_SI FIRST_USI
+		    ON FIRST_USI.UDL_SI_ID = TMP.FIRST_UDL_SI_ID
+
+		   )USIC
+		   
+		   LEFT OUTER JOIN
+		   (SELECT TMP.LAST_UDL_SI_ID LAST_UDL_SI_ID,
+			   CASE WHEN COUNT(USR.VALUE) > 1 
+			        THEN '* MULTIPLE *'
+			        ELSE MAX(USR.VALUE)
+			   END SINGLE_CARRIER_REFERENCE,
+			   USR.REFERENCE_TYPE_ID REFERENCE_TYPE_ID
+		   FROM 
+		   UDL_SI_CURRENT_TEMP TMP
+
+		   INNER JOIN
+		   (
+		   SELECT DISTINCT UDL_SI_ID
+			  ,UPPER(VALUE) AS VALUE
+			  ,REFERENCE_TYPE_ID
+		   FROM	
+		   UDL.UDL_SI_REFERENCE USR
+		   WHERE USR.REFERENCE_TYPE_ID = 4
+		   ) USR
+		   ON TMP.LAST_UDL_SI_ID = USR.UDL_SI_ID 
+		   AND USR.REFERENCE_TYPE_ID = 4
+		   GROUP BY LAST_UDL_SI_ID,REFERENCE_TYPE_ID
+		   ) SCR
+	    	   ON 	SCR.LAST_UDL_SI_ID = USIC.LAST_UDL_SI_ID
+		   AND  SCR.REFERENCE_TYPE_ID = 4
+	     );
+
+
+/*  Updating the UDL Table  */
+		     
+	UPDATE UDL.UDL_SI_CURRENT
+	SET
+	SOURCE_SI_ID = USCT.SOURCE_SI_ID
+	,FIRST_UDL_SI_ID = USCT.FIRST_UDL_SI_ID
+	,LAST_UDL_SI_ID = USCT.LAST_UDL_SI_ID
+	,LAST_SHIPMENT_ID = USCT.LAST_SHIPMENT_ID
+	,LAST_CUSTOMER_DATE_OF_ISSUE = USCT.LAST_CUSTOMER_DATE_OF_ISSUE
+	,CREATION_DATE = USCT.CREATION_DATE
+	,PURGED_FLAG = USCT.PURGED_FLAG
+	,DELETED_FLAG = USCT.DELETED_FLAG
+	,TOTAL_REVISIONS = USCT.TOTAL_REVISIONS
+	,LAST_SECURITY_ID = USCT.LAST_SECURITY_ID
+	,FIRST_REVISION_DATE = USCT.FIRST_REVISION_DATE
+	,LAST_REVISION_DATE = USCT.LAST_REVISION_DATE
+	,LAST_STATUS = USCT.LAST_STATUS
+	,LAST_CARRIER_COMPANY_ID = USCT.LAST_CARRIER_COMPANY_ID
+	,LAST_REQUESTER_COMPANY_ID = USCT.LAST_REQUESTER_COMPANY_ID
+	,FIRST_AMENDED_REVISION_ID = USCT.FIRST_AMENDED_REVISION_ID
+	,LAST_AMENDED_REVISION_ID = USCT.LAST_AMENDED_REVISION_ID
+	,LAST_AMENDED_REVISION_DATE = USCT.LAST_AMENDED_REVISION_DATE
+	,LAST_AMENDED_SECURITY_ID = USCT.LAST_AMENDED_SECURITY_ID
+	,LAST_MAIN_POL_GEO_ID = USCT.LAST_MAIN_POL_GEO_ID
+	,LAST_MAIN_POD_GEO_ID = USCT.LAST_MAIN_POD_GEO_ID
+	,LAST_MAIN_PLOR_GEO_ID = USCT.LAST_MAIN_PLOR_GEO_ID
+	,LAST_MAIN_PLOD_GEO_ID = USCT.LAST_MAIN_PLOD_GEO_ID
+	,TOTAL_CONTAINER_COUNT = USCT.TOTAL_CONTAINER_COUNT
+	,SINGLE_CARRIER_REFERENCE = USCT.SINGLE_CARRIER_REFERENCE
+	,UPDATED_PROCESS_ID = USCT.UPDATED_PROCESS_ID
+	,UPDATED_DATE = USCT.UPDATED_DATE
+
+	FROM UDL_SI_CURRENT_DUMMY USCT
+	WHERE USCT.ORIGINAL_SI_ID = UDL.UDL_SI_CURRENT.ORIGINAL_SI_ID;
+
+/*  **Commenting as part of OCT MR (2014)**
+
+	GET DIAGNOSTICS lv_upd_rowcnt = ROW_COUNT;
+
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET UPDATED_RECORD_COUNT = lv_upd_rowcnt
+	WHERE BATCH_ID = lv_batch_id
+	AND PROCESS_ID = lv_process_id AND TARGET_NAME = 'UDL_SI_CURRENT';
+*/
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_CURRENT
+	     (
+		ORIGINAL_SI_ID
+		,SOURCE_SI_ID
+		,FIRST_UDL_SI_ID
+		,LAST_UDL_SI_ID
+		,LAST_SHIPMENT_ID
+		,LAST_CUSTOMER_DATE_OF_ISSUE
+		,CREATION_DATE
+		,PURGED_FLAG
+		,DELETED_FLAG
+		,TOTAL_REVISIONS
+		,LAST_SECURITY_ID
+		,FIRST_REVISION_DATE
+		,LAST_REVISION_DATE
+		,LAST_STATUS
+		,LAST_CARRIER_COMPANY_ID 
+		,LAST_REQUESTER_COMPANY_ID
+		,FIRST_AMENDED_REVISION_ID
+		,LAST_AMENDED_REVISION_ID
+		,LAST_AMENDED_REVISION_DATE
+		,LAST_AMENDED_SECURITY_ID
+		,LAST_MAIN_POL_GEO_ID
+		,LAST_MAIN_POD_GEO_ID
+		,LAST_MAIN_PLOR_GEO_ID
+		,LAST_MAIN_PLOD_GEO_ID
+		,TOTAL_CONTAINER_COUNT
+		,SINGLE_CARRIER_REFERENCE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+ 	     (
+		SELECT
+		USCT.ORIGINAL_SI_ID
+		,USCT.SOURCE_SI_ID
+		,USCT.FIRST_UDL_SI_ID
+		,USCT.LAST_UDL_SI_ID
+		,USCT.LAST_SHIPMENT_ID
+		,USCT.LAST_CUSTOMER_DATE_OF_ISSUE
+		,USCT.CREATION_DATE
+		,USCT.PURGED_FLAG
+		,USCT.DELETED_FLAG
+		,USCT.TOTAL_REVISIONS
+		,USCT.LAST_SECURITY_ID
+		,USCT.FIRST_REVISION_DATE
+		,USCT.LAST_REVISION_DATE
+		,USCT.LAST_STATUS
+		,USCT.LAST_CARRIER_COMPANY_ID 
+		,USCT.LAST_REQUESTER_COMPANY_ID
+		,USCT.FIRST_AMENDED_REVISION_ID
+		,USCT.LAST_AMENDED_REVISION_ID
+		,USCT.LAST_AMENDED_REVISION_DATE
+		,USCT.LAST_AMENDED_SECURITY_ID
+		,USCT.LAST_MAIN_POL_GEO_ID
+		,USCT.LAST_MAIN_POD_GEO_ID
+		,USCT.LAST_MAIN_PLOR_GEO_ID
+		,USCT.LAST_MAIN_PLOD_GEO_ID
+		,USCT.TOTAL_CONTAINER_COUNT
+		,USCT.SINGLE_CARRIER_REFERENCE
+		,USCT.PARTITION_DATE
+		,USCT.INSERTED_PROCESS_ID
+		,USCT.INSERTED_DATE
+		,USCT.UPDATED_PROCESS_ID
+		,USCT.UPDATED_DATE
+
+		FROM UDL_SI_CURRENT_DUMMY USCT
+		LEFT OUTER JOIN
+		UDL.UDL_SI_CURRENT USC
+		ON USC.ORIGINAL_SI_ID = USCT.ORIGINAL_SI_ID
+		WHERE USC.ORIGINAL_SI_ID IS NULL		
+	     );	
+		
+	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_CURRENT';
+	RETURN -1; 
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_current_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_current_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_current_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_document_legacy(integer, integer)
+
+DROP FUNCTION IF EXISTS udl.fn_insert_udl_si_document_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_document_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2; 
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_DOCUMENT
+	     (
+		UDL_SI_DOCUMENT_ID,
+		UDL_SI_COMPANY_ID,
+		UDL_SI_ID,
+		SOURCE_DOCUMENT_ID,
+		SOURCE_COMPANY_ID,
+		DOCUMENT_TYPE_ID,
+		DOCUMENT_TYPE_DESC,
+		NUMBER_OF_DOCUMENTS,
+		DOCUMENT_STATUS_ID,
+		DOCUMENT_STATUS_DESC,
+		MASTER_NUMBER,
+		PARTITION_DATE,
+		INSERTED_PROCESS_ID,
+		INSERTED_DATE,
+		UPDATED_PROCESS_ID,
+		UPDATED_DATE
+	     )
+		
+	     (
+		SELECT 	
+		NEXTVAL('UDL.UDL_SI_DOCUMENT_SEQ') ,		
+		USP.SOURCE_COMPANY_ID,
+		US.UDL_SI_ID,
+		SD.DOCUMENT_ID,
+		USP.SOURCE_COMPANY_ID,
+		SD.DOCUMENT_TYPE_ID,
+		ETL.MAPPED_VALUE,
+		SD.NUMBER_OF_DOCUMENTS,
+		NULL,
+		NULL,
+		NULL,
+		SHI.CREATION_DATE,
+		lv_process_id,
+		CURRENT_TIMESTAMP,
+		lv_process_id,
+		CURRENT_TIMESTAMP
+		FROM
+
+
+		(Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHI
+
+		INNER JOIN
+			STG_INTTRA.STG_SI_DOCUMENT  SD
+		ON 	SD.SHIPPING_INSTRUCTION_ID = SHI.SHIPPING_INSTRUCTION_ID
+		AND	SHI.BATCH_ID = lv_batch_id
+		AND	SD.BATCH_ID = lv_batch_id
+		INNER JOIN
+			UDL.UDL_SI US
+		ON	SD.SHIPPING_INSTRUCTION_ID = US.SOURCE_SI_ID		
+		AND 	SHI.LAST_MODIFIED_DATE = US.SOURCE_REVISION_DATE
+		AND  	US.STATUS_DESC in ('Original','Amendment')
+		AND  	DATA_SOURCE = 'LEGACY'
+		
+		INNER JOIN
+			UDL.UDL_SI_PARTY USP
+		ON	SD.SHIPPING_INSTRUCTION_ID = USP.SOURCE_SI_ID
+		AND	US.UDL_SI_ID =  USP.UDL_SI_ID
+		LEFT OUTER JOIN
+			STG_INTTRA.STG_ETL_DATA_MAP ETL
+		ON	SD.DOCUMENT_TYPE_ID = ETL.VALUE
+		AND	ETL.ETL_DOMAIN_ID =7 
+		AND 	ETL.TABLE_NAME = 'SI_DOCUMENT_TYPE'
+	     );
+	
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_DOCUMENT';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_document_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_document_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_document_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_hazmat_communication_legacy(integer, integer)
+
+DROP FUNCTION IF EXISTS udl.fn_insert_udl_si_hazmat_communication_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_hazmat_communication_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_HAZMAT_COMMUNICATION
+	     ( 
+		UDL_SI_HAZMAT_COMMUNICATION_ID
+		,UDL_SI_HAZMAT_CONTACT_ID
+		,UDL_SI_ID
+		,SOURCE_SI_HAZMAT_COMMUNICATION_ID
+		,SOURCE_SI_HAZMAT_CONTACT_ID
+		,COMMUNICATION_TYPE_ID
+		,COMMUNICATION_TYPE_DESC
+		,COMMUNICATION_VALUE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_HAZMAT_COMMUNICATION_SEQ')
+		,USHC.UDL_SI_HAZMAT_CONTACT_ID
+		,USHC.UDL_SI_ID
+		,NULL
+		,NULL
+		,NULL
+		,'TELEPHONE'
+		,SIH.EMERGENCY_CONTACT_PHONE
+		,SI.CREATION_DATE
+	       	,lv_process_id
+	        ,CURRENT_TIMESTAMP
+	        ,lv_process_id
+	        ,CURRENT_TIMESTAMP
+
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SI 
+	
+		INNER JOIN 
+		STG_INTTRA.STG_SI_HAZMAT SIH
+		ON SIH.SHIPPING_INSTRUCTION_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND SIH.BATCH_ID = lv_batch_id
+		AND SI.BATCH_ID = lv_batch_id
+
+		INNER JOIN 
+		UDL.UDL_SI_HAZMAT_CONTACT USHC
+		ON USHC.SOURCE_HAZMAT_ID = SIH.HAZMAT_ID
+
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND USHC.UDL_SI_ID = USI.UDL_SI_ID
+		AND USI.SOURCE_REVISION_DATE = SI.LAST_MODIFIED_DATE 
+	        AND USI.STATUS_DESC in ('Original','Amendment')
+	        AND USI.DATA_SOURCE = 'LEGACY'
+		 
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_HAZMAT_COMMUNICATION';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_hazmat_communication_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_hazmat_communication_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_hazmat_communication_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_hazmat_contact_legacy(integer, integer)
+
+ DROP FUNCTION IF EXISTS udl.fn_insert_udl_si_hazmat_contact_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_hazmat_contact_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_HAZMAT_CONTACT
+	     ( 
+		UDL_SI_HAZMAT_CONTACT_ID
+		,UDL_SI_HAZMAT_ID
+		,UDL_SI_ID
+		,SOURCE_HAZMAT_CONTACT_ID
+		,SOURCE_HAZMAT_ID
+		,HAZMAT_CONTACT_TYPE_ID
+		,HAZMAT_CONTACT_TYPE_DESC
+		,CONTACT_NAME
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_HAZMAT_CONTACT_SEQ')
+		,USH.UDL_SI_HAZMAT_ID
+		,USH.UDL_SI_ID
+		,NULL	
+		,SIH.HAZMAT_ID 
+		,NULL
+		,NULL
+		,SIH.EMERGENCY_CONTACT_NAME
+	    	,SI.CREATION_DATE
+	   	,lv_process_id
+		,CURRENT_TIMESTAMP
+	        ,lv_process_id
+	        ,CURRENT_TIMESTAMP
+ 	
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SI
+
+		INNER JOIN 
+		STG_INTTRA.STG_SI_HAZMAT SIH 
+		ON SIH.SHIPPING_INSTRUCTION_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND SIH.BATCH_ID = lv_batch_id
+		AND SI.BATCH_ID = lv_batch_id
+
+		INNER JOIN
+		UDL.UDL_SI_HAZMAT USH
+		ON USH.SOURCE_HAZMAT_ID = SIH.HAZMAT_ID 
+
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND USH.UDL_SI_ID = USI.UDL_SI_ID
+		AND USI.SOURCE_REVISION_DATE = SI.LAST_MODIFIED_DATE 
+	        AND USI.STATUS_DESC in ('Original','Amendment')
+	        AND USI.DATA_SOURCE = 'LEGACY'
+
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_HAZMAT_CONTACT';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_hazmat_contact_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_hazmat_contact_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_hazmat_contact_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_hazmat_legacy(integer, integer)
+
+ DROP FUNCTION IF EXISTS udl.fn_insert_udl_si_hazmat_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_hazmat_legacy(batch_id integer, process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_HAZMAT
+	     ( 
+		UDL_SI_HAZMAT_ID
+		,UDL_SI_LINE_ITEM_ID
+		,UDL_SI_ID
+		,SOURCE_HAZMAT_ID
+		,SOURCE_LINE_ITEM_ID
+		,UN_NUMBER
+		,IMO_CLASS_ID
+		,IMO_CLASS_DESC 
+		,PAGE_NUMBER
+		,PROPER_SHIPPING_NAME
+		,PACKING_GROUP
+		,FLASH_POINT
+		,FLASH_POINT_UOM_ID
+		,FLASH_POINT_UOM_DESC
+		,PLACARD
+		,EMS_NUMBER
+		,COMMENTS
+		,PACKING_DETAILS
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_HAZMAT_SEQ')
+		,USILI.UDL_SI_LINE_ITEM_ID
+		,USI.UDL_SI_ID
+		,SIH.HAZMAT_ID
+		,SIH.COMMODITY_ID
+		,SIH.UN_NUMBER
+		,SIH.IMO_CLASS_ID
+		,ESIC.NAME
+		,NULL	
+		,SIH.PROPER_SHIPPING_NAME
+		,SIH.PACKING_GROUP
+		,SIH.FLASH_POINT
+		,SIH.FLASH_POINT_UOM_ID
+		,EDM.MAPPED_VALUE
+		,NULL
+		,NULL
+		,NULL
+		,SIH.PACKING_DETAILS
+	    	,SI.CREATION_DATE
+	   	,lv_process_id
+		,CURRENT_TIMESTAMP
+	        ,lv_process_id
+	        ,CURRENT_TIMESTAMP
+ 	
+		FROM STG_INTTRA.STG_SHIPPING_INSTRUCTION SI
+
+		INNER JOIN 
+		STG_INTTRA.STG_SI_HAZMAT SIH 
+		ON SIH.SHIPPING_INSTRUCTION_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND SIH.BATCH_ID = lv_batch_id
+		AND SI.BATCH_ID = lv_batch_id
+
+		INNER JOIN
+		UDL.UDL_SI_LINE_ITEM USILI
+		ON USILI.SOURCE_LINE_ITEM_ID = SIH.COMMODITY_ID
+		AND USILI.SOURCE_SI_ID = SIH.SHIPPING_INSTRUCTION_ID
+
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = USILI.SOURCE_SI_ID
+		AND USI.UDL_SI_ID = USILI.UDL_SI_ID
+		AND USI.DATA_SOURCE = 'LEGACY'
+
+		LEFT OUTER JOIN 
+		STG_INTTRA.STG_ES_IMO_CLASS ESIC
+		ON SIH.IMO_CLASS_ID = ESIC.IMO_CLASS_ID
+
+		LEFT OUTER JOIN
+		STG_INTTRA.STG_ETL_DATA_MAP EDM
+		ON SIH.FLASH_POINT_UOM_ID = EDM.VALUE 
+		AND EDM.ETL_DOMAIN_ID = 7  
+		AND EDM.TABLE_NAME = 'UOM_CATEGORY_VALUE'
+
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_HAZMAT';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_hazmat_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_hazmat_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_hazmat_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_legacy(integer, integer)
+
+ DROP FUNCTION IF exists udl.fn_insert_udl_si_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Creating the Temp Table */
+
+	DROP TABLE IF EXISTS  STG_SHIPPING_INSTRUCTION_TEMP;
+
+	CREATE TEMPORARY TABLE STG_SHIPPING_INSTRUCTION_TEMP
+	(
+	shipping_instruction_id bigint NOT NULL,
+	udl_si_id bigint,
+  	carrier_id bigint,
+	seq integer,
+ 	status_id bigint NOT NULL,
+  	move_type_id bigint,
+  	creator_user_id bigint NOT NULL,
+  	creator_company_id bigint NOT NULL,
+  	creation_date timestamp(0) without time zone NOT NULL,
+  	last_modified_date timestamp(0) without time zone NOT NULL,
+  	last_modified_by_user_id bigint NOT NULL,
+  	last_modified_by_company_id bigint NOT NULL,
+  	main_vessel character varying(50),
+	main_voyage character varying(50),
+  	routing_instructions character varying(200),
+  	uom_classification_id bigint NOT NULL,
+  	creation_method_id bigint NOT NULL,
+  	si_name character varying(60) NOT NULL,
+  	shipment_id character varying(38),
+  	transaction_version_id bigint,
+  	service_type_id bigint NOT NULL,
+  	client_release_version character varying(10),
+  	batch_id integer,
+  	inserted_date timestamp(0) without time zone,
+  	updated_date timestamp(0) without time zone
+	);
+
+/*  Inserting to the temp Table  */
+
+	INSERT INTO STG_SHIPPING_INSTRUCTION_TEMP
+	(
+	SHIPPING_INSTRUCTION_ID
+	,UDL_SI_ID
+	,CARRIER_ID
+	,SEQ
+        ,STATUS_ID
+	,MOVE_TYPE_ID
+	,CREATOR_USER_ID
+	,CREATOR_COMPANY_ID
+	,CREATION_DATE
+	,LAST_MODIFIED_DATE
+	,LAST_MODIFIED_BY_USER_ID
+	,LAST_MODIFIED_BY_COMPANY_ID
+	,MAIN_VESSEL
+	,MAIN_VOYAGE
+	,ROUTING_INSTRUCTIONS
+	,UOM_CLASSIFICATION_ID
+	,CREATION_METHOD_ID
+	,SI_NAME
+	,SHIPMENT_ID
+  	,TRANSACTION_VERSION_ID
+  	,SERVICE_TYPE_ID
+  	,CLIENT_RELEASE_VERSION
+  	,BATCH_ID
+  	,INSERTED_DATE
+  	,UPDATED_DATE
+	)
+	(
+	SELECT
+	DISTINCT A.SHIPPING_INSTRUCTION_ID
+	,NULL
+	,COALESCE(A.CARRIER_ID,3000) AS CARRIER_ID
+	,B.SI_ORDER
+        ,CASE 
+		WHEN A.STATUS_ID = 6 AND B.SI_ORDER = 1 AND C.UDL_SI_ID IS NULL 
+		THEN 3
+        	ELSE A.STATUS_ID
+         END AS STATUS_ID
+	,A.MOVE_TYPE_ID
+	,A.CREATOR_USER_ID
+	,A.CREATOR_COMPANY_ID
+	,A.CREATION_DATE
+	,A.LAST_MODIFIED_DATE
+	,A.LAST_MODIFIED_BY_USER_ID
+	,A.LAST_MODIFIED_BY_COMPANY_ID
+	,A.MAIN_VESSEL
+	,A.MAIN_VOYAGE
+	,A.ROUTING_INSTRUCTIONS
+	,A.UOM_CLASSIFICATION_ID
+	,A.CREATION_METHOD_ID
+	,A.SI_NAME
+	,A.SHIPMENT_ID
+  	,A.TRANSACTION_VERSION_ID
+  	,A.SERVICE_TYPE_ID
+  	,A.CLIENT_RELEASE_VERSION
+  	,A.BATCH_ID
+  	,A.INSERTED_DATE
+  	,A.UPDATED_DATE
+
+	FROM 	
+	STG_INTTRA.STG_SHIPPING_INSTRUCTION A
+	INNER JOIN
+	(SELECT A.SHIPPING_INSTRUCTION_ID,A.LAST_MODIFIED_DATE
+	,RANK() OVER(PARTITION BY A.SHIPPING_INSTRUCTION_ID ORDER BY A.LAST_MODIFIED_DATE) SI_ORDER 
+	FROM (SELECT * FROM STG_INTTRA.STG_SHIPPING_INSTRUCTION SI
+	WHERE SI.BATCH_ID = lv_batch_id) A
+	) B
+	ON A.SHIPPING_INSTRUCTION_ID = B.SHIPPING_INSTRUCTION_ID
+	AND A.LAST_MODIFIED_DATE = B.LAST_MODIFIED_DATE
+	AND A.STATUS_ID  IN (3,6)
+	AND A.BATCH_ID = lv_batch_id
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SHIPPING_INSTRUCTION SI2
+	ON	SI2.SHIPPING_INSTRUCTION_ID = A.SHIPPING_INSTRUCTION_ID
+	AND	SI2.STATUS_ID  = 4
+	AND	SI2.BATCH_ID= lv_batch_id
+	LEFT OUTER JOIN
+	UDL.UDL_SI C
+	ON C.SOURCE_SI_ID = A.SHIPPING_INSTRUCTION_ID
+	AND C.STATUS_DESC = 'Original'
+	AND C.DATA_SOURCE = 'LEGACY'
+	WHERE	SI2.SHIPPING_INSTRUCTION_ID IS NULL )
+	UNION
+	(
+	SELECT 
+DISTINCT A.SHIPPING_INSTRUCTION_ID
+	,US.UDL_SI_ID
+	,COALESCE(A.CARRIER_ID,3000) AS CARRIER_ID
+	,1
+        ,A.STATUS_ID
+	,A.MOVE_TYPE_ID
+	,A.CREATOR_USER_ID
+	,A.CREATOR_COMPANY_ID
+	,A.CREATION_DATE
+	,A.LAST_MODIFIED_DATE
+	,A.LAST_MODIFIED_BY_USER_ID
+	,A.LAST_MODIFIED_BY_COMPANY_ID
+	,A.MAIN_VESSEL
+	,A.MAIN_VOYAGE
+	,A.ROUTING_INSTRUCTIONS
+	,A.UOM_CLASSIFICATION_ID
+	,A.CREATION_METHOD_ID
+	,A.SI_NAME
+	,A.SHIPMENT_ID
+  	,A.TRANSACTION_VERSION_ID
+  	,A.SERVICE_TYPE_ID
+  	,A.CLIENT_RELEASE_VERSION
+  	,A.BATCH_ID
+  	,A.INSERTED_DATE
+  	,A.UPDATED_DATE
+	 FROM 
+	STG_INTTRA.STG_SHIPPING_INSTRUCTION A	
+	LEFT OUTER JOIN
+	(SELECT MAX(USI.SOURCE_REVISION_DATE) SOURCE_REVISION_DATE,USI.ORIGINAL_SI_ID 
+	FROM UDL.UDL_SI USI WHERE USI.DATA_SOURCE = 'LEGACY'
+	GROUP BY USI.ORIGINAL_SI_ID) U
+	ON U.ORIGINAL_SI_ID = A.SHIPPING_INSTRUCTION_ID	
+	LEFT OUTER JOIN
+		UDL.UDL_SI US
+	ON US.ORIGINAL_SI_ID = U.ORIGINAL_SI_ID
+	AND US.SOURCE_REVISION_DATE = U.SOURCE_REVISION_DATE
+	WHERE 	A.STATUS_ID  = 4
+	AND	A.BATCH_ID= lv_batch_id
+	);
+
+IF 0 < (SELECT COUNT(*) FROM STG_SHIPPING_INSTRUCTION_TEMP WHERE STATUS_ID = 4 AND UDL_SI_ID IS NOT NULL) THEN
+
+	DROP TABLE IF EXISTS udl_si_temp;
+
+	CREATE TEMPORARY TABLE udl_si_temp
+	(
+	  udl_si_id bigint NOT NULL,
+	  source_si_id bigint NOT NULL,
+	  original_si_id bigint,
+	  si_source character varying(100) NOT NULL,
+	  Sequence1 integer NOT NULL,
+	  status_id integer,
+	  status_desc character varying(100),
+	  message_function_code character varying(3),
+	  data_source character varying(50) NOT NULL,
+	  transaction_version_id integer,
+	  transaction_version_id_desc character varying(50),
+	  channel character varying(20) NOT NULL,
+	  source_creation_date timestamp without time zone NOT NULL,
+	  creation_method_id integer,
+	  creation_method_id_desc character varying(50),
+	  channel_version character varying(10) NOT NULL,
+	  format character varying(20) NOT NULL,
+	  format_version character varying(15) NOT NULL,
+	  security_id bigint NOT NULL,
+	  subscription_transpoter_id integer,
+	  sender_company_id integer,
+	  sender_company_name character varying(80),
+	  sender_detail character varying(200),
+	  carrier_company_id integer,
+	  carrier_company_name character varying(80),
+	  carrier_geo_area_id integer,
+	  requester_company_id integer NOT NULL,
+	  requester_company_name character varying(80),
+	  requester_geo_area_id integer,
+	  shipment_revision character varying(6),
+	  master_bill_number character varying(30),
+	  shipment_id character varying(35),
+	  si_name character varying(60) NOT NULL,
+	  last_modified_by_company_id integer,
+	  source_revision_date timestamp without time zone NOT NULL,
+	  move_type_id integer,
+	  move_type_desc character varying(50),
+	  summary_id integer,
+	  summary_container_count integer,
+	  summary_weight bigint,
+	  summary_weight_uom_id smallint,
+	  summary_weight_uom_desc character varying(100),
+	  summary_volume numeric(38,4),
+	  summary_volume_uom_id integer,
+	  summary_volume_uom_desc character varying(100),
+	  summary_package_count integer,
+	  total_container_count integer,
+	  comments character varying(100000),
+	  routing_instructions character varying(100000),
+	  transport_remarks character varying(100000),
+	  bl_remarks character varying(100000),
+	  uom_classification_id integer,
+	  uom_classification_id_desc character varying(80),
+	  source_access_key_id bigint,
+	  source_creator_user_id integer,
+	  source_last_modified_by_user_id integer,
+	  ams_filing_flag smallint,
+	  date_of_issue timestamp without time zone,
+	  date_of_issue_format_id smallint,
+	  date_of_issue_format character varying(30),
+	  declared_value numeric(38,2),
+	  currency_type_id integer,
+	  declared_value_currency character varying(100),
+	  service_type_id integer,
+	  service_type_desc character varying(50),
+	  bl_issue_geo_id integer,
+	  bl_issue_date timestamp without time zone,
+	  bl_issue_date_format_id smallint,
+	  bl_issue_date_format character varying(30),
+	  payable_at_geo_id integer,
+	  payable_at_city character varying(256),
+	  payable_at_country character varying(25),
+	  main_pol_geo_id integer,
+	  main_pod_geo_id integer,
+	  main_plor_geo_id integer,
+	  main_plod_geo_id integer,
+	  main_country_of_origin_geo_id integer,
+	  main_conveyance_number character varying(50),
+	  main_transport_name character varying(50),
+	  source_transportation_id integer,
+	  transport_code character varying(9),
+      transportation_means_type_id integer,
+      transportation_means_desc character varying(17),
+      carrier_scac_code character varying(17),
+      vessel_country_code character varying(3),
+      transportation_service_id integer,
+      transportation_service character varying(35),
+      channel_minor_version character varying(10),
+	  message_type_value character varying(100),
+	  carrier_type_value character varying(100),
+	  link_sender_edi_id character varying(200),
+	  compliance_version character varying(100),
+	  flow_type_id character varying(100),
+	  in_gentran_log_id character varying(38),
+	  in_receiver_id character varying(35),
+	  in_message_counter integer,
+	  out_processed_date_time timestamp without time zone,
+	  in_message_contact character varying(60),
+	  in_message_contact_phone character varying(80),
+	  in_message_email character varying(80),
+	  processed_status character varying(35),
+	  out_gentran_log_id character varying(38),
+	  out_sender_id character varying(35),
+	  out_receiver_id character varying(35),
+	  out_message_type character varying(8),
+	  partition_date timestamp without time zone NOT NULL,
+	  inserted_process_id integer NOT NULL,
+	  inserted_date timestamp without time zone NOT NULL,
+	  updated_process_id integer NOT NULL,
+	  updated_date timestamp without time zone NOT NULL
+	)
+;
+
+
+	INSERT INTO udl_si_temp SELECT * FROM udl.udl_si;
+
+
+	/* UPDATE UDL_SI WITH Cancelled FEED*/
+
+
+	UPDATE  udl_si_temp usi
+	SET STATUS_ID = 4,
+	STATUS_DESC = 'Cancelled',
+	SOURCE_REVISION_DATE = SIT.LAST_MODIFIED_DATE,
+	updated_process_id = lv_process_id,
+	updated_date = current_timestamp
+	FROM STG_SHIPPING_INSTRUCTION_TEMP SIT
+	WHERE 	USI.UDL_SI_ID = SIT.UDL_SI_ID 
+	AND	SIT.STATUS_ID = 4;
+
+	TRUNCATE udl.wrk_udl_si_legacy;	
+
+	INSERT INTO udl.wrk_udl_si_legacy SELECT * FROM udl_si_temp;
+
+	ALTER TABLE udl.udl_si RENAME TO udl_sil_old;
+
+	ALTER TABLE udl.wrk_udl_si_legacy RENAME TO udl_si;
+
+	ALTER TABLE udl.udl_sil_old RENAME TO wrk_udl_si_legacy;
+
+
+END IF;
+	
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI
+	(
+	UDL_SI_ID,
+	SOURCE_SI_ID,
+	ORIGINAL_SI_ID,
+	SI_SOURCE,
+	Sequence1,
+	STATUS_ID,
+	STATUS_DESC,
+	MESSAGE_FUNCTION_CODE,
+	DATA_SOURCE,
+	TRANSACTION_VERSION_ID,
+	TRANSACTION_VERSION_ID_DESC ,
+	CHANNEL,
+	SOURCE_CREATION_DATE,
+	CREATION_METHOD_ID,
+	CREATION_METHOD_ID_DESC,
+	CHANNEL_VERSION,
+	FORMAT,
+	FORMAT_VERSION,
+	SECURITY_ID,
+	SUBSCRIPTION_TRANSPOTER_ID,
+	SENDER_COMPANY_ID,
+	SENDER_COMPANY_NAME,
+	SENDER_DETAIL,
+	CARRIER_COMPANY_ID,
+	CARRIER_COMPANY_NAME,
+	CARRIER_GEO_AREA_ID,
+	REQUESTER_COMPANY_ID,
+	REQUESTER_COMPANY_NAME,
+	REQUESTER_GEO_AREA_ID,
+	SHIPMENT_REVISION,
+	MASTER_BILL_NUMBER,
+	SHIPMENT_ID,
+	SI_NAME,
+	LAST_MODIFIED_BY_COMPANY_ID,
+	SOURCE_REVISION_DATE,
+	MOVE_TYPE_ID,
+	MOVE_TYPE_DESC,
+	SUMMARY_ID,
+	SUMMARY_CONTAINER_COUNT,
+	SUMMARY_WEIGHT,
+	SUMMARY_WEIGHT_UOM_ID,
+	SUMMARY_WEIGHT_UOM_DESC,
+	SUMMARY_VOLUME,
+	SUMMARY_VOLUME_UOM_ID,
+	SUMMARY_VOLUME_UOM_DESC,
+	SUMMARY_PACKAGE_COUNT,
+	TOTAL_CONTAINER_COUNT,
+	COMMENTS,
+	ROUTING_INSTRUCTIONS,
+	TRANSPORT_REMARKS,
+	BL_REMARKS,
+	UOM_CLASSIFICATION_ID,
+	UOM_CLASSIFICATION_ID_DESC ,
+	SOURCE_ACCESS_KEY_ID,
+	SOURCE_CREATOR_USER_ID,
+	SOURCE_LAST_MODIFIED_BY_USER_ID,
+	AMS_FILING_FLAG,
+	DATE_OF_ISSUE,
+	DATE_OF_ISSUE_FORMAT_ID,
+	DATE_OF_ISSUE_FORMAT,
+	DECLARED_VALUE,
+	CURRENCY_TYPE_ID,
+	DECLARED_VALUE_CURRENCY,
+	SERVICE_TYPE_ID,
+	SERVICE_TYPE_DESC,
+	BL_ISSUE_GEO_ID,
+	BL_ISSUE_DATE,
+	BL_ISSUE_DATE_format_id,
+	BL_ISSUE_DATE_format,
+	PAYABLE_AT_GEO_ID,
+	PAYABLE_AT_CITY,
+	PAYABLE_AT_COUNTRY,
+	MAIN_POL_GEO_ID,
+	MAIN_POD_GEO_ID,
+	MAIN_PLOR_GEO_ID,
+	MAIN_PLOD_GEO_ID,
+	MAIN_COUNTRY_OF_ORIGIN_GEO_ID,
+	MAIN_CONVEYANCE_NUMBER,
+	MAIN_TRANSPORT_NAME,
+	SOURCE_TRANSPORTATION_ID,
+	TRANSPORT_CODE,
+	TRANSPORTATION_MEANS_TYPE_ID ,
+    TRANSPORTATION_MEANS_DESC,
+    CARRIER_SCAC_CODE,
+    VESSEL_COUNTRY_CODE,
+    TRANSPORTATION_SERVICE_ID,
+    TRANSPORTATION_SERVICE,
+	CHANNEL_MINOR_VERSION,
+	MESSAGE_TYPE_VALUE,
+	CARRIER_TYPE_VALUE,
+	LINK_SENDER_EDI_ID,
+	COMPLIANCE_VERSION,
+	FLOW_TYPE_ID,
+	IN_GENTRAN_LOG_ID,
+	IN_RECEIVER_ID,
+	IN_MESSAGE_COUNTER,
+	OUT_PROCESSED_DATE_TIME,
+	IN_MESSAGE_CONTACT,
+	IN_MESSAGE_CONTACT_PHONE,
+	IN_MESSAGE_EMAIL,
+	PROCESSED_STATUS,
+	OUT_GENTRAN_LOG_ID,
+	OUT_SENDER_ID,
+	OUT_RECEIVER_ID,
+	OUT_MESSAGE_TYPE,
+	PARTITION_DATE,
+	INSERTED_PROCESS_ID,
+	INSERTED_DATE,
+	UPDATED_PROCESS_ID,
+	UPDATED_DATE
+	)
+	(
+	SELECT
+	NEXTVAL('UDL.UDL_SI_SEQ'),
+	SHI.SHIPPING_INSTRUCTION_ID,
+	SHI.SHIPPING_INSTRUCTION_ID,
+	ETL1.MAPPED_VALUE,
+	COALESCE(UMAX.Sequence1,0)+SHI.SEQ,
+	SHI.STATUS_ID,
+	ETL.MAPPED_VALUE,
+	NULL,
+	'LEGACY',
+	SHI.TRANSACTION_VERSION_ID,
+	TV.DESCRIPTION,
+	'DESKTOP',
+	SHI.CREATION_DATE,
+	SHI.CREATION_METHOD_ID,
+	ETL2.MAPPED_VALUE,
+	TV.PRODUCT_VERSION,
+	TV.FORMAT,
+	TV.VERSION,
+	US.SECURITY_ID,
+	NULL,
+	SHI.CREATOR_COMPANY_ID,
+	EC.COMPANY_LOCATION_NAME AS SENDER_COMPANY_NAME,
+	NULL,
+	SHI.CARRIER_ID,
+	COALESCE(ESCOMP.COMPANY_NAME,SICOMP.COMPANY_NAME) AS CARRIER_COMPANY_NAME,
+	ADDR.GEOGRAPHY_AREA_ID AS CARRIER_GEO_AREA_ID,
+	SHI.CREATOR_COMPANY_ID,
+	EC.COMPANY_LOCATION_NAME AS REQUESTER_COMPANY_NAME,
+	ADDR1.GEOGRAPHY_AREA_ID AS REQUESTER_GEO_AREA_ID,
+	NULL,
+	NULL,
+	SHI.SHIPMENT_ID,
+	SHI.SI_NAME,
+	SHI.LAST_MODIFIED_BY_COMPANY_ID,
+	SHI.LAST_MODIFIED_DATE,
+	SHI.MOVE_TYPE_ID,
+	ETL3.MAPPED_VALUE,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	COALESCE(G.CNTR_CNT,0) AS CNTR_CNT,
+	SFI.COMMENTS,
+	SHI.ROUTING_INSTRUCTIONS,
+	NULL,
+	NULL,
+	SHI.UOM_CLASSIFICATION_ID,
+	UOM.DESCRIPTION,
+	NULL,
+	SHI.CREATOR_USER_ID,
+	SHI.LAST_MODIFIED_BY_USER_ID,
+	NULL,
+	SFI.DATE_OF_ISSUE,
+	NULL,
+	'DD-MON-YYYY HH24:MI:SS',
+	SFI.DECLARED_VALUE,
+	SFI.CURRENCY_TYPE_ID,
+	ETL4.MAPPED_VALUE,
+	SHI.SERVICE_TYPE_ID,
+	NULL,
+	SL.GEOGRAPHY_AREA_ID,
+	SFI.DATE_OF_ISSUE,
+	NULL,
+	'DD-MON-YYYY HH24:MI:SS',
+	NULL,
+	SFI.FREIGHT_PAYABLE_AT,
+	NULL,
+	SL1.GEOGRAPHY_AREA_ID,
+	SL2.GEOGRAPHY_AREA_ID,
+	SL3.GEOGRAPHY_AREA_ID,
+	SL4.GEOGRAPHY_AREA_ID,
+	SL5.GEOGRAPHY_AREA_ID,
+	SHI.MAIN_VOYAGE,
+	SHI.MAIN_VESSEL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	SHI.CLIENT_RELEASE_VERSION,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	NULL,
+	SHI.CREATION_DATE,
+	lv_process_id,
+	CURRENT_TIMESTAMP,
+	lv_process_id,
+	CURRENT_TIMESTAMP
+
+	FROM
+		STG_SHIPPING_INSTRUCTION_TEMP SHI
+	INNER JOIN 
+		(SELECT ETL.MAPPED_VALUE,SH.STATUS_ID
+		FROM STG_INTTRA.STG_ETL_DATA_MAP ETL ,STG_SHIPPING_INSTRUCTION_TEMP SH
+		WHERE SH.STATUS_ID = ETL.VALUE 
+		AND ETL.ETL_DOMAIN_ID = 7 
+		AND ETL.TABLE_NAME = 'SI_STATUS'
+		AND SH.BATCH_ID = lv_batch_id
+		GROUP BY ETL.MAPPED_VALUE,SH.STATUS_ID) ETL
+	ON	ETL.STATUS_ID = SHI.STATUS_ID	
+	AND	SHI.BATCH_ID = lv_batch_id
+	INNER JOIN
+		STG_INTTRA.STG_TRANSACTION_VERSION  TV
+	ON 	SHI.TRANSACTION_VERSION_ID = TV.TRANSACTION_VERSION_ID
+	INNER JOIN
+		(SELECT ETL.MAPPED_VALUE,SH.CREATION_METHOD_ID
+		FROM STG_INTTRA.STG_ETL_DATA_MAP ETL ,STG_SHIPPING_INSTRUCTION_TEMP SH
+		WHERE SH.CREATION_METHOD_ID = ETL.VALUE 
+		AND ETL.ETL_DOMAIN_ID = 7 
+		AND ETL.TABLE_NAME = 'SI_CREATION_METHOD_CHANNEL'
+		AND SH.BATCH_ID = lv_batch_id
+		GROUP BY ETL.MAPPED_VALUE,SH.CREATION_METHOD_ID) ETL1
+	ON	ETL1.CREATION_METHOD_ID = SHI.CREATION_METHOD_ID
+	INNER JOIN
+		(SELECT ETL.MAPPED_VALUE,SH.CREATION_METHOD_ID
+		FROM STG_INTTRA.STG_ETL_DATA_MAP ETL ,STG_SHIPPING_INSTRUCTION_TEMP SH
+		WHERE SH.CREATION_METHOD_ID = ETL.VALUE 
+		AND ETL.ETL_DOMAIN_ID = 1 
+		AND ETL.TABLE_NAME = 'SI_CREATION_METHOD'
+		AND SH.BATCH_ID = lv_batch_id
+		GROUP BY ETL.MAPPED_VALUE,SH.CREATION_METHOD_ID) ETL2
+	ON	ETL2.CREATION_METHOD_ID = SHI.CREATION_METHOD_ID
+	INNER JOIN
+		(
+		SELECT  A.SHIPPING_INSTRUCTION_ID
+			,'_' || TRIM (TRAILING '_' FROM STRING_AGG(A.COMPANY_ID,'_' ORDER BY A.COMPANY_ID )) SECURITY_CODE
+		FROM 
+			   (SELECT 
+			       DISTINCT COMPANY_ID
+			       ,S1.SHIPPING_INSTRUCTION_ID 
+			   FROM STG_SHIPPING_INSTRUCTION_TEMP S1
+				,STG_INTTRA.STG_SI_COMPANY S2
+			   WHERE S1.SHIPPING_INSTRUCTION_ID = S2.SHIPPING_INSTRUCTION_ID
+			   AND	 S2.COMPANY_ID IS NOT NULL
+			   AND S1.BATCH_ID= lv_batch_id
+			   AND S2.BATCH_ID= lv_batch_id
+			   )A 
+		GROUP BY A.SHIPPING_INSTRUCTION_ID
+		)B		
+	ON 	B.SHIPPING_INSTRUCTION_ID=SHI.SHIPPING_INSTRUCTION_ID 
+	INNER JOIN
+		UDL.UDL_SECURITY US
+	ON	B.SECURITY_CODE = US.SECURITY_CODE
+	INNER JOIN
+		(
+		SELECT C.SHIPPING_INSTRUCTION_ID
+			,TRIM(TRAILING '_' FROM STRING_AGG (C.COMPANY_ID||'_'||C.DESCRIPTION || '_' ORDER BY C.COMPANY_ID,C.DESCRIPTION)) AS SECURITY_ROLE_CODE
+		FROM
+		(       SELECT DISTINCT S4.COMPANY_ID,SA.DESCRIPTION ,S4.SHIPPING_INSTRUCTION_ID
+			FROM 	STG_SHIPPING_INSTRUCTION_TEMP S3, STG_INTTRA.STG_SI_COMPANY S4,STG_INTTRA.STG_SI_ACTIVITY_TYPE SA
+			WHERE 	S4.SHIPPING_INSTRUCTION_ID = S3.SHIPPING_INSTRUCTION_ID  
+			AND	S4.ACTIVITY_TYPE_ID = SA.ACTIVITY_TYPE_ID
+			AND	S4.COMPANY_ID IS NOT NULL
+			AND 	S3.BATCH_ID= lv_batch_id
+			AND 	S4.BATCH_ID= lv_batch_id			
+		) C
+		GROUP BY C.SHIPPING_INSTRUCTION_ID
+		) D
+	ON	D.SHIPPING_INSTRUCTION_ID=SHI.SHIPPING_INSTRUCTION_ID 
+	AND	D.SECURITY_ROLE_CODE = US.SECURITY_ROLE_CODE
+	INNER JOIN
+		UDL.UDL_COMPANY_LOCATION EC
+	ON	SHI.CREATOR_COMPANY_ID = EC.SOURCE_COMPANY_LOCATION_ID
+	LEFT OUTER JOIN		
+		(SELECT DISTINCT S5.SHIPPING_INSTRUCTION_ID , EC1.COMPANY_LOCATION_NAME AS COMPANY_NAME
+		FROM 	UDL.UDL_COMPANY_LOCATION EC1,
+			STG_SHIPPING_INSTRUCTION_TEMP S5
+		WHERE	S5.CARRIER_ID = EC1.SOURCE_COMPANY_LOCATION_ID
+		AND	S5.BATCH_ID = lv_batch_id 
+		GROUP BY S5.SHIPPING_INSTRUCTION_ID , EC1.COMPANY_LOCATION_NAME) ESCOMP
+	ON	SHI.SHIPPING_INSTRUCTION_ID = ESCOMP.SHIPPING_INSTRUCTION_ID 
+	LEFT OUTER JOIN
+		(SELECT DISTINCT S6.SHIPPING_INSTRUCTION_ID , SC1.COMPANY_NAME AS COMPANY_NAME
+		FROM 	STG_INTTRA.STG_SI_COMPANY SC1,
+			STG_SHIPPING_INSTRUCTION_TEMP S6
+		WHERE	S6.CARRIER_ID = SC1.COMPANY_ID
+		AND	S6.SHIPPING_INSTRUCTION_ID = SC1.SHIPPING_INSTRUCTION_ID
+		AND	ACTIVITY_TYPE_ID = 2 
+		AND	SC1.COMPANY_ID IS NOT NULL
+		AND	S6.BATCH_ID = lv_batch_id
+		AND	SC1.BATCH_ID = lv_batch_id
+		GROUP BY S6.SHIPPING_INSTRUCTION_ID , SC1.COMPANY_NAME) SICOMP
+	ON	SHI.SHIPPING_INSTRUCTION_ID = SICOMP.SHIPPING_INSTRUCTION_ID 
+	LEFT OUTER JOIN
+		UDL.UDL_COMPANY_LOCATION COMP
+	ON	SHI.CARRIER_ID  = COMP.SOURCE_COMPANY_LOCATION_ID
+	LEFT OUTER JOIN
+		UDL.UDL_ADDRESS ADDR
+	ON	COMP.ADDRESS_ID = ADDR.ADDRESS_ID
+	LEFT OUTER JOIN
+		UDL.UDL_COMPANY_LOCATION COMP1
+	ON	SHI.CREATOR_COMPANY_ID  = COMP1.SOURCE_COMPANY_LOCATION_ID
+	LEFT OUTER JOIN
+		UDL.UDL_ADDRESS ADDR1
+	ON	COMP1.ADDRESS_ID = ADDR1.ADDRESS_ID
+	LEFT OUTER JOIN
+		(SELECT ETL.MAPPED_VALUE,SH.MOVE_TYPE_ID
+		FROM STG_INTTRA.STG_ETL_DATA_MAP ETL ,STG_SHIPPING_INSTRUCTION_TEMP SH
+		WHERE SH.MOVE_TYPE_ID = ETL.VALUE 
+		AND ETL.ETL_DOMAIN_ID = 7 
+		AND ETL.TABLE_NAME = 'SI_MOVE_TYPE'
+		AND SH.BATCH_ID = lv_batch_id
+		GROUP BY ETL.MAPPED_VALUE,SH.MOVE_TYPE_ID) ETL3
+		ON	ETL3.MOVE_TYPE_ID = SHI.MOVE_TYPE_ID
+	LEFT OUTER JOIN
+		(SELECT SHIPPING_INSTRUCTION_ID,COUNT(CONTAINER_ID) CNTR_CNT
+		FROM 	STG_INTTRA.STG_SI_CONTAINER CNTR
+		WHERE	CNTR.BATCH_ID = lv_batch_id
+		GROUP BY CNTR.SHIPPING_INSTRUCTION_ID) G
+	ON	SHI.SHIPPING_INSTRUCTION_ID = G.SHIPPING_INSTRUCTION_ID
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SI_FINANCIAL_INFO SFI
+	ON	SHI.SHIPPING_INSTRUCTION_ID = SFI.SHIPPING_INSTRUCTION_ID
+	AND	SFI.BATCH_ID = lv_batch_id
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_UOM_CLASSIFICATION UOM
+	ON	SHI.UOM_CLASSIFICATION_ID = UOM.UOM_CLASSIFICATION_ID
+	LEFT OUTER JOIN
+		(SELECT ETL.MAPPED_VALUE,SFI1.CURRENCY_TYPE_ID
+		FROM STG_INTTRA.STG_ETL_DATA_MAP ETL ,STG_INTTRA.STG_SI_FINANCIAL_INFO SFI1
+		WHERE SFI1.CURRENCY_TYPE_ID = ETL.VALUE 
+		AND ETL.ETL_DOMAIN_ID = 7 
+		AND ETL.TABLE_NAME = 'SI_CURRENCY_TYPE'
+		AND SFI1.BATCH_ID = lv_batch_id
+		GROUP BY ETL.MAPPED_VALUE,SFI1.CURRENCY_TYPE_ID) ETL4
+		ON	ETL4.CURRENCY_TYPE_ID = SFI.CURRENCY_TYPE_ID
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SI_LOCATION SL
+	ON	SHI.SHIPPING_INSTRUCTION_ID =  SL.SHIPPING_INSTRUCTION_ID
+	AND	SL.LOCATION_TYPE_ID = 6
+	AND	SL.BATCH_ID = lv_batch_id
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SI_LOCATION SL1
+	ON	SHI.SHIPPING_INSTRUCTION_ID =  SL1.SHIPPING_INSTRUCTION_ID
+	AND	SL1.LOCATION_TYPE_ID = 3
+	AND	SL1.BATCH_ID = lv_batch_id
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SI_LOCATION SL2
+	ON	SHI.SHIPPING_INSTRUCTION_ID =  SL2.SHIPPING_INSTRUCTION_ID
+	AND	SL2.LOCATION_TYPE_ID = 1
+	AND	SL2.BATCH_ID = lv_batch_id
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SI_LOCATION SL3
+	ON	SHI.SHIPPING_INSTRUCTION_ID =  SL3.SHIPPING_INSTRUCTION_ID
+	AND	SL3.LOCATION_TYPE_ID = 5
+	AND	SL3.BATCH_ID = lv_batch_id
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SI_LOCATION SL4
+	ON	SHI.SHIPPING_INSTRUCTION_ID =  SL4.SHIPPING_INSTRUCTION_ID
+	AND	SL4.LOCATION_TYPE_ID = 2
+	AND	SL4.BATCH_ID = lv_batch_id
+	LEFT OUTER JOIN
+		STG_INTTRA.STG_SI_LOCATION SL5
+	ON	SHI.SHIPPING_INSTRUCTION_ID =  SL5.SHIPPING_INSTRUCTION_ID
+	AND	SL5.LOCATION_TYPE_ID = 4
+	AND	SL5.BATCH_ID = lv_batch_id
+
+	LEFT OUTER JOIN
+	(SELECT SI.UDL_SI_ID UDL_SI_ID,SEQMAX.ORIGINAL_SI_ID ORIGINAL_SI_ID,SEQMAX.Sequence1 SEQUENCE1
+	FROM UDL.UDL_SI SI
+	INNER JOIN 
+	(SELECT ORIGINAL_SI_ID,MAX(Sequence1) Sequence1 FROM UDL.UDL_SI 
+	WHERE DATA_SOURCE = 'LEGACY' GROUP BY ORIGINAL_SI_ID) SEQMAX
+	ON SEQMAX.ORIGINAL_SI_ID = SI.ORIGINAL_SI_ID
+	AND SEQMAX.Sequence1 = SI.Sequence1
+	) UMAX
+	ON SHI.SHIPPING_INSTRUCTION_ID = UMAX.ORIGINAL_SI_ID
+	LEFT OUTER JOIN
+	STG_SHIPPING_INSTRUCTION_TEMP SMP
+	ON	SHI.SHIPPING_INSTRUCTION_ID = SMP.SHIPPING_INSTRUCTION_ID
+	AND	SMP.STATUS_ID = 4 
+	WHERE	SMP.UDL_SI_ID IS NULL
+	);
+
+GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+SET ERROR_TEXT = lv_error_msg
+WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI';
+
+RETURN -1;
+
+END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_line_item_attribute_legacy(integer, integer)
+
+DROP FUNCTION if exists udl.fn_insert_udl_si_line_item_attribute_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_line_item_attribute_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+
+	LV_INSRT_ROWCNT INT := -1;
+	LV_ERROR_MSG  TEXT;
+	LV_BATCH_ID ALIAS FOR $1;
+	LV_PROCESS_ID ALIAS FOR $2;
+
+BEGIN
+
+	/*  INSERTING TO THE UDL TABLE  */
+
+	INSERT INTO UDL.UDL_SI_LINE_ITEM_ATTRIBUTE
+	(
+	UDL_SI_LINE_ITEM_ATTRIBUTE_ID,
+	UDL_SI_LINE_ITEM_ID,
+	UDL_SI_ID,
+	SOURCE_LINE_ITEM_ID,
+	LINE_ITEM_ATTRIBUTE_TYPE_ID,
+	LINE_ITEM_ATTRIBUTE_TYPE_DESC,
+	SEQUENCE_NBR,
+	VALUE,
+	PARTITION_DATE,
+	INSERTED_PROCESS_ID,
+	INSERTED_DATE,
+	UPDATED_PROCESS_ID,
+	UPDATED_DATE
+	)
+	SELECT 	NEXTVAL('UDL.UDL_SI_LINE_ITEM_ATTRIBUTE_SEQ'),
+			UDL_SI_LINE_ITEM_ID,
+			UDL_SI_ID,
+			SOURCE_LINE_ITEM_ID,
+			LINE_ITEM_ATTRIBUTE_TYPE_ID,
+			LINE_ITEM_ATTRIBUTE_TYPE_DESC,
+			SEQUENCE_NBR,
+			VALUE,
+			PARTITION_DATE,
+			LV_PROCESS_ID,
+			CURRENT_TIMESTAMP,
+			LV_PROCESS_ID,
+			CURRENT_TIMESTAMP
+	FROM
+		((SELECT 
+		U_LINE_ITEM.UDL_SI_LINE_ITEM_ID,
+		U_SI.UDL_SI_ID,
+		SI_CMM.COMMODITY_ID as SOURCE_LINE_ITEM_ID,
+		2 AS LINE_ITEM_ATTRIBUTE_TYPE_ID,
+		'Harmonised system code' AS LINE_ITEM_ATTRIBUTE_TYPE_DESC,
+		SI_CMM.SEQUENCE_NBR,
+		trim(substr(SI_CMM.HS_CODE,1,1000)) AS VALUE,
+		SI.CREATION_DATE AS PARTITION_DATE	
+		FROM 
+			(SELECT MAX(SC.COMMODITY_ID) COMMODITY_ID,
+					SC.SHIPPING_INSTRUCTION_ID,SC.CARGO_DESCRIPTION,
+					SC.MARKS_AND_NUMBERS,SC.TLI_NUMBER,SC.NCM_CODE_LIST,
+					SC.EXPORT_REGISTRY_NUMBER,SC.HOUSE_BROKER_REFERENCE,
+					SC.EXPORT_DECLARATION_TYPE,
+					Rank () over (partition by MAX(SC.COMMODITY_ID) ORDER BY trim(unnest(string_to_array(hs_code,',')))) SEQUENCE_NBR
+					,trim(unnest(string_to_array(hs_code,','))) hs_code,SC.BATCH_ID 
+			FROM STG_INTTRA.STG_SI_COMMODITY  SC
+			WHERE SC.HS_CODE IS NOT NULL 
+			AND SC.BATCH_ID = lv_batch_id
+			GROUP BY SC.SHIPPING_INSTRUCTION_ID,trim(unnest(string_to_array(hs_code,','))),
+					SC.CARGO_DESCRIPTION,SC.MARKS_AND_NUMBERS,SC.TLI_NUMBER,
+					SC.NCM_CODE_LIST,SC.EXPORT_REGISTRY_NUMBER,
+					SC.HOUSE_BROKER_REFERENCE,SC.EXPORT_DECLARATION_TYPE,SC.BATCH_ID) SI_CMM
+	 INNER JOIN
+			STG_INTTRA.STG_SHIPPING_INSTRUCTION SI
+	ON 		SI_CMM.SHIPPING_INSTRUCTION_ID= SI.SHIPPING_INSTRUCTION_ID	
+	AND 	SI.BATCH_ID=lv_batch_id
+	AND 	SI_CMM.BATCH_ID=lv_batch_id
+	INNER JOIN 
+			UDL.UDL_SI_LINE_ITEM U_LINE_ITEM
+	ON		U_LINE_ITEM.SOURCE_LINE_ITEM_ID=SI_CMM.COMMODITY_ID
+	INNER JOIN  
+			UDL.UDL_SI U_SI
+	ON 		U_LINE_ITEM.SOURCE_SI_ID=U_SI.SOURCE_SI_ID
+	AND 	U_LINE_ITEM.UDL_SI_ID=U_SI.UDL_SI_ID
+	AND 	SI.LAST_MODIFIED_DATE = U_SI.SOURCE_REVISION_DATE
+	AND  	U_SI.STATUS_DESC in ('Original','Amendment')
+	AND 	U_SI.DATA_SOURCE = 'LEGACY' ORDER BY 1) 
+	UNION
+	(SELECT 	 
+		U_LINE_ITEM.UDL_SI_LINE_ITEM_ID,
+		U_SI.UDL_SI_ID,
+		SI_CMM.COMMODITY_ID as SOURCE_LINE_ITEM_ID,
+		3 AS LINE_ITEM_ATTRIBUTE_TYPE_ID,
+		'NCM Code' AS LINE_ITEM_ATTRIBUTE_TYPE_DESC,
+		SI_CMM.SEQUENCE_NBR,
+		trim(substr(SI_CMM.NCM_CODE_LIST,1,1000)) AS VALUE,
+		SI.CREATION_DATE AS PARTITION_DATE
+	FROM 
+		(SELECT MAX(SC.COMMODITY_ID) COMMODITY_ID,SC.SHIPPING_INSTRUCTION_ID,
+				SC.CARGO_DESCRIPTION,SC.MARKS_AND_NUMBERS,SC.HS_CODE,
+				SC.TLI_NUMBER,SC.EXPORT_REGISTRY_NUMBER,
+				SC.HOUSE_BROKER_REFERENCE,SC.EXPORT_DECLARATION_TYPE,
+				Rank () over (partition by MAX(SC.COMMODITY_ID) ORDER BY trim(unnest(string_to_array(SC.NCM_CODE_LIST,',')))) SEQUENCE_NBR
+				,trim(unnest(string_to_array(NCM_CODE_LIST,','))) NCM_CODE_LIST,SC.BATCH_ID 
+		FROM STG_INTTRA.STG_SI_COMMODITY  SC
+		WHERE SC.NCM_CODE_LIST IS NOT NULL 
+		AND SC.BATCH_ID = lv_batch_id
+		GROUP BY SC.SHIPPING_INSTRUCTION_ID,trim(unnest(string_to_array(NCM_CODE_LIST,','))),
+				SC.CARGO_DESCRIPTION,SC.MARKS_AND_NUMBERS,SC.TLI_NUMBER,SC.HS_CODE,SC.EXPORT_REGISTRY_NUMBER,
+				SC.HOUSE_BROKER_REFERENCE,SC.EXPORT_DECLARATION_TYPE,SC.BATCH_ID) SI_CMM
+	INNER JOIN
+		STG_INTTRA.STG_SHIPPING_INSTRUCTION SI
+	ON 	SI_CMM.SHIPPING_INSTRUCTION_ID= SI.SHIPPING_INSTRUCTION_ID	
+	AND SI.BATCH_ID=lv_batch_id
+	AND SI_CMM.BATCH_ID=lv_batch_id
+	INNER JOIN 
+		UDL.UDL_SI_LINE_ITEM U_LINE_ITEM
+	ON	U_LINE_ITEM.SOURCE_LINE_ITEM_ID=SI_CMM.COMMODITY_ID		
+	INNER JOIN  
+		UDL.UDL_SI U_SI
+	ON 	U_LINE_ITEM.SOURCE_SI_ID=U_SI.SOURCE_SI_ID
+	AND U_LINE_ITEM.UDL_SI_ID=U_SI.UDL_SI_ID
+	AND SI.LAST_MODIFIED_DATE = U_SI.SOURCE_REVISION_DATE
+	AND U_SI.STATUS_DESC in ('Original','Amendment')
+	AND U_SI.DATA_SOURCE = 'LEGACY' ORDER BY 1
+	))A ;
+
+
+	GET DIAGNOSTICS LV_INSRT_ROWCNT = ROW_COUNT;
+	RETURN LV_INSRT_ROWCNT;
+
+/*  WHEN ERRORS  */
+
+
+EXCEPTION WHEN OTHERS THEN LV_ERROR_MSG = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = LV_ERROR_MSG
+	WHERE BATCH_ID = LV_BATCH_ID AND TARGET_NAME = 'UDL_SI_LINE_ITEM_ATTRIBUTE';
+	RETURN -1; 
+
+END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_line_item_attribute_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_line_item_attribute_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_line_item_attribute_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_line_item_classification_legacy(integer, integer)
+
+ DROP FUNCTION if exists udl.fn_insert_udl_si_line_item_classification_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_line_item_classification_legacy(batch_id integer, process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_LINE_ITEM_CLASSIFICATION
+	     ( 
+		CODE
+		,DESCRIPTION
+		,CONCATINATING_DESC
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+	     
+	     (
+	      SELECT 
+		MHC.CODE
+		,MHC.DESCRIPTION
+		,MHC.CONCATINATING_DESC
+		,lv_process_id
+		,CURRENT_TIMESTAMP
+	        ,lv_process_id
+	        ,CURRENT_TIMESTAMP
+ 	
+		FROM STG_INTTRA.STG_MV_HS_CODE MHC
+		WHERE MHC.BATCH_ID = lv_batch_id	     
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_LINE_ITEM_CLASSIFICATION';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_line_item_classification_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_line_item_classification_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_line_item_classification_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_line_item_legacy(integer, integer)
+
+ DROP FUNCTION if exists udl.fn_insert_udl_si_line_item_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_line_item_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+
+LV_INSRT_ROWCNT INT := -1;
+LV_ERROR_MSG  TEXT;
+LV_BATCH_ID ALIAS FOR $1;
+LV_PROCESS_ID ALIAS FOR $2;
+
+BEGIN
+
+/*  INSERTING TO THE UDL TABLE  */
+
+INSERT INTO UDL.UDL_SI_LINE_ITEM
+(
+UDL_SI_LINE_ITEM_ID,
+UDL_SI_ID,
+SOURCE_SI_ID,
+SOURCE_LINE_ITEM_ID,
+PACKAGE_LEVEL_TYPE_ID,
+PACKAGE_LEVEL_TYPE_DESC, 
+CARGO_DESCRIPTION,
+MARKS_AND_NUMBERS,
+---HS_CODE,  --OCT MR 2014
+---NCM_CODE_LIST, -- FEB MR 2015
+EXPORT_DECLARATION_TYPE,
+PARTITION_DATE,
+INSERTED_PROCESS_ID,
+INSERTED_DATE,
+UPDATED_PROCESS_ID,
+UPDATED_DATE
+)
+
+(
+SELECT
+ NEXTVAL('UDL.UDL_SI_LINE_ITEM_SEQ'), 
+u_si.udl_si_id,
+commodity.SHIPPING_INSTRUCTION_ID,
+commodity.COMMODITY_ID,
+1,
+'Outer',
+commodity.CARGO_DESCRIPTION,
+commodity.MARKS_AND_NUMBERS,
+---commodity.HS_CODE,  --OCT MR 2014
+---commodity.NCM_CODE_LIST, -- FEB MR 2015
+commodity.EXPORT_DECLARATION_TYPE,
+shipping_instr.CREATION_DATE,
+lv_process_id,
+current_timestamp,
+lv_process_id,
+current_timestamp
+
+from 
+
+ (select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) shipping_instr
+
+
+inner join
+ stg_inttra.stg_si_commodity commodity
+	on shipping_instr.SHIPPING_INSTRUCTION_ID= commodity.SHIPPING_INSTRUCTION_ID
+	and commodity.batch_id=lv_batch_id
+	and shipping_instr.batch_id=lv_batch_id
+
+ inner join
+udl.udl_si u_si
+	on commodity.SHIPPING_INSTRUCTION_id= u_si.SOURCE_SI_ID 
+	AND u_si.DATA_SOURCE  = 'LEGACY'
+	AND u_si.source_revision_date = shipping_instr.last_modified_date
+	AND u_si.status_desc IN ('Original','Amendment')
+);
+
+GET DIAGNOSTICS LV_INSRT_ROWCNT = ROW_COUNT;
+RETURN LV_INSRT_ROWCNT;
+
+/*  WHEN ERRORS  */
+
+EXCEPTION WHEN OTHERS THEN LV_ERROR_MSG = SQLERRM;
+UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+SET ERROR_TEXT = LV_ERROR_MSG
+WHERE BATCH_ID = LV_BATCH_ID AND TARGET_NAME = 'UDL_SI_LINE_ITEM';
+RETURN -1; 
+END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_line_item_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_line_item_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_line_item_legacy(integer, integer) TO edwudl_prod;
+
+
+
+
+
+
+
+-- Function: udl.fn_insert_udl_si_message_legacy(integer, integer)
+
+DROP FUNCTION if exists udl.fn_insert_udl_si_message_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_message_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  INSERTING TO THE UDL TABLE  */
+
+	INSERT INTO UDL.UDL_SI_MESSAGE
+              (
+		UDL_SI_MESSAGE_ID
+		,UDL_SI_ID
+		,SOURCE_MESSAGE_ID
+		,SOURCE_SI_ID
+		,STATUS
+		,DIRECTION
+		,RECEIVED_DATETIME
+		,RECEIVER_ID
+		,COMMENTS
+		,PROCESSED_DATETIME
+		,DATA
+		,MESSAGE_TYPE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE	
+             )	
+	     (
+		SELECT 
+		NEXTVAL('UDL.UDL_SI_MESSAGE_SEQ')
+		,US.UDL_SI_ID
+		,SM.MESSAGE_ID
+		,SM.SHIPPING_INSTRUCTION_ID
+		,SM.STATUS
+		,SM.DIRECTION
+		,SM.RECEIVED_DATETIME
+		,SM.RECEIVER_ID
+		,SM.COMMENTS
+		,SM.PROCESSED_DATETIME
+		,SM.DATA
+		,SM.MESSAGE_TYPE
+		,SI.CREATION_DATE
+		,lv_process_id 
+		,CURRENT_TIMESTAMP
+	        ,lv_process_id 
+	        ,CURRENT_TIMESTAMP		
+
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SI
+		 
+		INNER JOIN 
+		STG_INTTRA.STG_SI_MESSAGE SM
+		ON SM.SHIPPING_INSTRUCTION_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND SI.BATCH_ID = lv_batch_id
+		AND SM.BATCH_ID = lv_batch_id
+			 
+		INNER JOIN UDL.UDL_SI US
+		ON US.SOURCE_SI_ID = SM.SHIPPING_INSTRUCTION_ID
+		AND US.DATA_SOURCE = 'LEGACY'
+		AND US.source_revision_date = SI.last_modified_date
+		AND US.status_desc IN ('Original','Amendment')	
+	
+	     );
+	
+	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  WHEN ERRORS  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_MESSAGE';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_message_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_message_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_message_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_party_communication_legacy(integer, integer)
+
+ DROP FUNCTION if exists udl.fn_insert_udl_si_party_communication_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_party_communication_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_insrt_rowcnt_phone INT;
+lv_insrt_rowcnt_fax INT;
+lv_insrt_rowcnt_email INT;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_PARTY_COMMUNICATION
+	     ( 
+		UDL_SI_PARTY_COMMUNICATION_ID
+		,UDL_SI_PARTY_CONTACT_ID
+		,UDL_SI_ID
+		,SOURCE_SI_PARTY_COMMUNICATION_ID
+		,SOURCE_SI_PARTY_CONTACT_ID
+		,COMMUNICATION_TYPE_ID
+		,COMMUNICATION_TYPE_DESC
+		,COMMUNICATION_VALUE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_PARTY_COMMUNICATION_SEQ')	AS UDL_SI_PARTY_COMMUNICATION_ID
+		,USI_PARTY_CNT.UDL_SI_PARTY_CONTACT_ID		AS UDL_SI_PARTY_CONTACT_ID
+		,USI_PARTY_CNT.UDL_SI_ID			AS UDL_SI_ID
+		,NULL						AS SOURCE_SI_PARTY_COMMUNICATION_ID
+		,SI_CMPNY_CNT.COMPANY_CONTACT_ID		AS SOURCE_SI_PARTY_CONTACT_ID
+		,1						AS COMMUNICATION_TYPE_ID
+		,'Telephone'					AS COMMUNICATION_TYPE_DESC
+		,SI_CMPNY_CNT.PHONE				AS COMMUNICATION_VALUE
+		,SHIP_INSTN.CREATION_DATE			AS PARTITION_DATE
+	       	,lv_process_id  				AS INSERTED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP  				AS INSERTED_DATE
+	        ,lv_process_id 					AS UPDATED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP 				AS UPDATED_DATE
+	 	
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SHIP_INSTN.BATCH_ID = lv_batch_id
+		AND SI_CMPNY.BATCH_ID = lv_batch_id
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY_CONTACT SI_CMPNY_CNT
+		ON SI_CMPNY.SHIPPING_INSTRUCTION_ID = SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY.SI_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID = SHIP_INSTN.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY_CNT.BATCH_ID = lv_batch_id
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND USI.SOURCE_REVISION_DATE = SHIP_INSTN.LAST_MODIFIED_DATE 
+	    AND USI.STATUS_DESC IN( 'Original' , 'Amendment')
+		AND USI.DATA_SOURCE='LEGACY'
+		INNER JOIN 
+		UDL.UDL_SI_PARTY_CONTACT USI_PARTY_CNT
+		ON USI_PARTY_CNT.SOURCE_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND USI.UDL_SI_ID = USI_PARTY_CNT.UDL_SI_ID
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt_phone = ROW_COUNT;
+
+	INSERT INTO UDL.UDL_SI_PARTY_COMMUNICATION
+	     ( 
+		UDL_SI_PARTY_COMMUNICATION_ID
+		,UDL_SI_PARTY_CONTACT_ID
+		,UDL_SI_ID
+		,SOURCE_SI_PARTY_COMMUNICATION_ID
+		,SOURCE_SI_PARTY_CONTACT_ID
+		,COMMUNICATION_TYPE_ID
+		,COMMUNICATION_TYPE_DESC
+		,COMMUNICATION_VALUE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_PARTY_COMMUNICATION_SEQ')	AS UDL_SI_PARTY_COMMUNICATION_ID
+		,USI_PARTY_CNT.UDL_SI_PARTY_CONTACT_ID		AS UDL_SI_PARTY_CONTACT_ID
+		,USI_PARTY_CNT.UDL_SI_ID			AS UDL_SI_ID
+		,NULL						AS SOURCE_SI_PARTY_COMMUNICATION_ID
+		,SI_CMPNY_CNT.COMPANY_CONTACT_ID		AS SOURCE_SI_PARTY_CONTACT_ID
+		,2						AS COMMUNICATION_TYPE_ID
+		,'fax'						AS COMMUNICATION_TYPE_DESC
+		,SI_CMPNY_CNT.FAX				AS COMMUNICATION_VALUE
+		,SHIP_INSTN.CREATION_DATE			AS PARTITION_DATE
+	       	,lv_process_id  				AS INSERTED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP  				AS INSERTED_DATE
+	        ,lv_process_id 					AS UPDATED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP 				AS UPDATED_DATE
+	 	
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SHIP_INSTN.BATCH_ID = lv_batch_id
+		AND SI_CMPNY.BATCH_ID = lv_batch_id
+
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY_CONTACT SI_CMPNY_CNT
+		ON SI_CMPNY.SHIPPING_INSTRUCTION_ID = SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY.SI_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID = SHIP_INSTN.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY_CNT.BATCH_ID = lv_batch_id
+
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND USI.SOURCE_REVISION_DATE = SHIP_INSTN.LAST_MODIFIED_DATE 
+	        AND USI.STATUS_DESC IN( 'Original' , 'Amendment')
+		AND USI.DATA_SOURCE='LEGACY'
+		INNER JOIN 
+		UDL.UDL_SI_PARTY_CONTACT USI_PARTY_CNT
+		ON USI_PARTY_CNT.SOURCE_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND USI.UDL_SI_ID = USI_PARTY_CNT.UDL_SI_ID
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt_fax = ROW_COUNT;
+
+	INSERT INTO UDL.UDL_SI_PARTY_COMMUNICATION
+	     ( 
+		UDL_SI_PARTY_COMMUNICATION_ID
+		,UDL_SI_PARTY_CONTACT_ID
+		,UDL_SI_ID
+		,SOURCE_SI_PARTY_COMMUNICATION_ID
+		,SOURCE_SI_PARTY_CONTACT_ID
+		,COMMUNICATION_TYPE_ID
+		,COMMUNICATION_TYPE_DESC
+		,COMMUNICATION_VALUE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_PARTY_COMMUNICATION_SEQ')	AS UDL_SI_PARTY_COMMUNICATION_ID
+		,USI_PARTY_CNT.UDL_SI_PARTY_CONTACT_ID		AS UDL_SI_PARTY_CONTACT_ID
+		,USI_PARTY_CNT.UDL_SI_ID			AS UDL_SI_ID
+		,NULL						AS SOURCE_SI_PARTY_COMMUNICATION_ID
+		,SI_CMPNY_CNT.COMPANY_CONTACT_ID		AS SOURCE_SI_PARTY_CONTACT_ID
+		,3						AS COMMUNICATION_TYPE_ID
+		,'email'					AS COMMUNICATION_TYPE_DESC
+		,SI_CMPNY_CNT.EMAIL_ADDRESS			AS COMMUNICATION_VALUE
+		,SHIP_INSTN.CREATION_DATE			AS PARTITION_DATE
+	        ,lv_process_id  				AS INSERTED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP  				AS INSERTED_DATE
+	        ,lv_process_id 					AS UPDATED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP 				AS UPDATED_DATE
+	 	
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SHIP_INSTN.BATCH_ID = lv_batch_id
+		AND SI_CMPNY.BATCH_ID = lv_batch_id
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY_CONTACT SI_CMPNY_CNT
+		ON SI_CMPNY.SHIPPING_INSTRUCTION_ID = SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY.SI_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID = SHIP_INSTN.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY_CNT.BATCH_ID = lv_batch_id
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND USI.SOURCE_REVISION_DATE = SHIP_INSTN.LAST_MODIFIED_DATE 
+	        AND USI.STATUS_DESC IN( 'Original' , 'Amendment')
+		AND USI.DATA_SOURCE='LEGACY'
+		INNER JOIN 
+		UDL.UDL_SI_PARTY_CONTACT USI_PARTY_CNT
+		ON USI_PARTY_CNT.SOURCE_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND USI.UDL_SI_ID = USI_PARTY_CNT.UDL_SI_ID
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt_email = ROW_COUNT;
+	lv_insrt_rowcnt = lv_insrt_rowcnt_phone + lv_insrt_rowcnt_fax + lv_insrt_rowcnt_email; 
+   	
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_PARTY_COMMUNICATION';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_party_communication_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_communication_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_communication_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_party_contact_legacy(integer, integer)
+
+ DROP FUNCTION if exists udl.fn_insert_udl_si_party_contact_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_party_contact_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_PARTY_CONTACT
+	     ( 
+		UDL_SI_PARTY_CONTACT_ID
+		,UDL_SI_PARTY_ID
+		,UDL_SI_ID
+		,SOURCE_COMPANY_CONTACT_ID
+		,SOURCE_COMPANY_ID
+		,COMPANY_CONTACT_TYPE_ID
+		,COMPANY_CONTACT_TYPE_DESC
+		,CONTACT_NAME
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_PARTY_CONTACT_SEQ')	AS UDL_SI_PARTY_CONTACT_ID
+		,USI_PARTY.UDL_SI_PARTY_ID		AS UDL_SI_PARTY_ID
+		,USI_PARTY.UDL_SI_ID			AS UDL_SI_ID
+		,SI_CMPNY_CNT.COMPANY_CONTACT_ID	AS SOURCE_COMPANY_CONTACT_ID
+		,SI_CMPNY_CNT.SI_COMPANY_ID		AS SOURCE_COMPANY_ID
+		,1					AS COMPANY_CONTACT_TYPE_ID
+		,'Information Contact'			AS COMPANY_CONTACT_TYPE_DESC
+		,SI_CMPNY_CNT.CONTACT_NAME		AS CONTACT_NAME
+		,SHIP_INSTN.CREATION_DATE		AS PARTITION_DATE
+	        ,lv_process_id  			AS INSERTED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP  			AS INSERTED_DATE
+	        ,lv_process_id 				AS UPDATED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP 			AS UPDATED_DATE
+	 	
+		FROM  (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN
+		INNER JOIN
+		 STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SHIP_INSTN.BATCH_ID = lv_batch_id
+		AND SI_CMPNY.BATCH_ID = lv_batch_id
+
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY_CONTACT SI_CMPNY_CNT
+		ON SI_CMPNY.SHIPPING_INSTRUCTION_ID = SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY.SI_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND SI_CMPNY_CNT.SHIPPING_INSTRUCTION_ID = SHIP_INSTN.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY_CNT.BATCH_ID = lv_batch_id
+
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND USI.SOURCE_REVISION_DATE = SHIP_INSTN.LAST_MODIFIED_DATE 
+	        AND USI.STATUS_DESC IN( 'Original','Amendment')
+		AND USI.DATA_SOURCE='LEGACY'
+
+		INNER JOIN 
+		UDL.UDL_SI_PARTY USI_PARTY
+		ON USI_PARTY.SOURCE_COMPANY_ID = SI_CMPNY_CNT.SI_COMPANY_ID
+		AND USI.UDL_SI_ID = USI_PARTY.UDL_SI_ID
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_PARTY_CONTACT';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_party_contact_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_contact_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_contact_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_party_legacy(integer, integer)
+
+DROP FUNCTION if exists udl.fn_insert_udl_si_party_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_party_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_PARTY
+	     ( 
+		UDL_SI_PARTY_ID
+		,UDL_SI_ID
+		,SOURCE_SI_ID
+		,SOURCE_COMPANY_ID
+		,SOURCE_ES_COMPANY_ID
+		,COMPANY_NAME
+		,COMPANY_TYPE_ID
+		,COMPANY_TYPE_DESC
+		,ADDRESS
+		,STREET_NAME
+		,CITY_NAME
+		,STATE_NAME
+		,POSTAL_CODE
+		,COUNTRY_GEO_ID
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_PARTY_SEQ')		AS UDL_SI_PARTY_ID
+		,USI.UDL_SI_ID				AS UDL_SI_ID
+		,SI_CMPNY.SHIPPING_INSTRUCTION_ID	AS SOURCE_SI_ID
+		,SI_CMPNY.SI_COMPANY_ID			AS SOURCE_COMPANY_ID
+		,SI_CMPNY.COMPANY_ID			AS SOURCE_ES_COMPANY_ID
+		,SI_CMPNY.COMPANY_NAME 			AS COMPANY_NAME
+		,SI_CMPNY.ACTIVITY_TYPE_ID		AS COMPANY_TYPE_ID
+		,ETL_DM.MAPPED_VALUE			AS COMPANY_TYPE_DESC
+		,SI_CMPNY.ADDRESS			AS ADDRESS
+		,NULL					AS STREET_NAME
+		,NULL					AS CITY_NAME
+		,NULL					AS STATE_NAME
+		,NULL					AS POSTAL_CODE
+		,SI_CMPNY.COUNTRY_GEO_ID		AS COUNTRY_GEO_ID
+		,SHIP_INSTN.CREATION_DATE		AS PARTITION_DATE
+	       	,lv_process_id  			AS INSERTED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP  			AS INSERTED_DATE
+	        ,lv_process_id 				AS UPDATED_PROCESS_ID
+	        ,CURRENT_TIMESTAMP 			AS UPDATED_DATE
+	 	
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SHIP_INSTN.BATCH_ID = lv_batch_id
+		AND SI_CMPNY.BATCH_ID = lv_batch_id
+
+		INNER JOIN 
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND USI.DATA_SOURCE = 'LEGACY'
+		AND SHIP_INSTN.LAST_MODIFIED_DATE = USI.SOURCE_REVISION_DATE
+		AND USI.STATUS_DESC in ('Original','Amendment')
+		
+		LEFT OUTER JOIN
+		STG_INTTRA.STG_ETL_DATA_MAP ETL_DM
+		ON SI_CMPNY.ACTIVITY_TYPE_ID = ETL_DM.VALUE 
+		AND ETL_DM.ETL_DOMAIN_ID = 7 
+		AND ETL_DM.TABLE_NAME = 'SI_ACTIVITY_TYPE'
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_PARTY';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_party_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_party_reference_legacy(integer, integer)
+
+ DROP FUNCTION if exists udl.fn_insert_udl_si_party_reference_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_party_reference_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_PARTY_REFERENCE
+	     ( 
+		UDL_SI_PARTY_REFERENCE_ID
+		,UDL_SI_PARTY_ID
+		,UDL_SI_ID
+		,SOURCE_COMPANY_REFERENCE_ID
+		,SOURCE_COMPANY_ID
+		,REFERENCE_TYPE_ID
+		,REFERENCE_TYPE_DESC
+		,COMPANY_REFERENCE_VALUE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )	     
+	     (
+	      SELECT 
+		NEXTVAL('UDL.UDL_SI_PARTY_REFERENCE_SEQ')	AS UDL_SI_PARTY_REFERENCE_ID
+		,USI_PARTY.UDL_SI_PARTY_ID			AS UDL_SI_PARTY_ID
+		,USI_PARTY.UDL_SI_ID				AS UDL_SI_ID
+		,NULL						AS SOURCE_COMPANY_REFERENCE_ID
+		,NULL						AS SOURCE_COMPANY_ID
+		,NULL						AS REFERENCE_TYPE_ID
+		,'GOVT_REFEREENCE_NUMBER'			AS REFERENCE_TYPE_DESC
+		,SI_CMPNY.GOVT_REFERENCE_NUMBER			AS COMPANY_REFERENCE_VALUE
+		,SHIP_INSTN.CREATION_DATE			AS PARTITION_DATE
+		,lv_process_id   				AS INSERTED_PROCESS_ID
+		,CURRENT_TIMESTAMP  				AS INSERTED_DATE
+		,lv_process_id   				AS UPDATED_PROCESS_ID
+		,CURRENT_TIMESTAMP 				AS UPDATED_DATE
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN
+		INNER JOIN
+		STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SHIP_INSTN.BATCH_ID = lv_batch_id
+		AND SI_CMPNY.BATCH_ID = lv_batch_id
+		INNER JOIN
+		UDL.UDL_SI USI
+		ON USI.SOURCE_SI_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND USI.SOURCE_REVISION_DATE = SHIP_INSTN.LAST_MODIFIED_DATE 
+	        AND USI.STATUS_DESC IN( 'Original' , 'Amendment')
+		AND USI.DATA_SOURCE='LEGACY'
+		INNER JOIN
+		UDL.UDL_SI_PARTY USI_PARTY
+		ON USI_PARTY.SOURCE_COMPANY_ID = SI_CMPNY.SI_COMPANY_ID
+		AND USI.UDL_SI_ID = USI_PARTY.UDL_SI_ID		
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */	
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_PARTY_REFERENCE';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_party_reference_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_reference_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_party_reference_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_payment_instruction_legacy(integer, integer)
+
+DROP FUNCTION if exists udl.fn_insert_udl_si_payment_instruction_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_payment_instruction_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  INSERTING TO THE UDL TABLE  */
+
+	INSERT INTO UDL.UDL_SI_PAYMENT_INSTRUCTION
+              (
+		UDL_SI_PAYMENT_INSTRUCTION_ID
+		,UDL_SI_ID
+		,SOURCE_PAYMENT_INSTRUCTION_ID
+		,SOURCE_SI_ID
+		,FREIGHT_TERM_TYPE_ID
+		,FREIGHT_TERM_TYPE_DESC
+		,CHARGE_TYPE_ID
+		,CHARGE_TYPE_DESC
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+			
+             )	
+	     (
+		SELECT 
+		NEXTVAL('UDL.UDL_SI_PAYMENT_INSTRUCTION_SEQ')
+		,US.UDL_SI_ID
+		,SPI.PAYMENT_INSTRUCTION_ID
+		,SPI.SHIPPING_INSTRUCTION_ID
+		,SPI.FREIGHT_TERM_TYPE_ID
+		,EDM.MAPPED_VALUE
+		,SPI.CHARGE_TYPE_ID
+		,CT.DESCRIPTION
+		,SI.CREATION_DATE
+	   	,lv_process_id 
+		,CURRENT_TIMESTAMP
+	        ,lv_process_id 
+	        ,CURRENT_TIMESTAMP
+
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SI 
+		
+		INNER JOIN 
+		STG_INTTRA.STG_SI_PAYMENT_INSTRUCTION SPI
+		ON SPI.SHIPPING_INSTRUCTION_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND SI.BATCH_ID = lv_batch_id 
+		AND SPI.BATCH_ID = lv_batch_id
+		
+		INNER JOIN 
+		UDL.UDL_SI US
+		ON US.SOURCE_SI_ID = SPI.SHIPPING_INSTRUCTION_ID
+		AND US.DATA_SOURCE = 'LEGACY'
+		AND US.source_revision_date = SI.last_modified_date
+		AND US.status_desc IN ('Original','Amendment')	
+		
+		LEFT OUTER JOIN
+		STG_INTTRA.STG_ETL_DATA_MAP EDM
+		ON SPI.FREIGHT_TERM_TYPE_ID = EDM.VALUE 
+		AND EDM.ETL_DOMAIN_ID = 7 
+		AND EDM.TABLE_NAME = 'SI_FREIGHT_TERM_TYPE'
+			
+		LEFT OUTER JOIN 
+		STG_INTTRA.STG_CHARGE_TYPE CT
+		ON CT.CHARGE_TYPE_ID=SPI.CHARGE_TYPE_ID
+
+	     );
+	
+	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  WHEN ERRORS  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_PAYMENT_INSTRUCTION';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_payment_instruction_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_payment_instruction_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_payment_instruction_legacy(integer, integer) TO edwudl_prod;
+
+-- Function: udl.fn_insert_udl_si_reference_legacy(integer, integer)
+
+ DROP FUNCTION if exists udl.fn_insert_udl_si_reference_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_reference_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  INSERTING TO THE UDL TABLE  */
+
+	INSERT INTO UDL.UDL_SI_REFERENCE
+              (
+		UDL_SI_REFERENCE_ID
+		,UDL_SI_ID
+		,SOURCE_REFERENCE_ID
+		,SOURCE_SI_ID
+		,REFERENCE_TYPE_ID
+		,REFERENCE_QUALIFIER
+		,REFERENCE_TYPE_DESC
+		,VALUE
+		,ISSUANCE_DATE
+		,EXPIRATION_DATE
+		,FTX_ISSUANCE_DATE
+		,FTX_EXPIRATION_DATE
+		,PARTITION_DATE
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE	
+             )	
+	     (
+		SELECT 
+		NEXTVAL('UDL.UDL_SI_REFERENCE_SEQ')
+		,US.UDL_SI_ID
+	        ,SR.REFERENCE_ID
+		,SR.SHIPPING_INSTRUCTION_ID
+		,SR.REFERENCE_TYPE_ID
+		,NULL
+		,EDM.MAPPED_VALUE
+		,SR.VALUE
+		,NULL
+		,NULL
+		,NULL
+		,NULL
+		,SI.CREATION_DATE
+		,lv_process_id
+		,CURRENT_TIMESTAMP
+	        ,lv_process_id
+	        ,CURRENT_TIMESTAMP		
+		 
+		FROM (Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SI
+		 
+		INNER JOIN 
+		STG_INTTRA.STG_SI_REFERENCE SR
+		ON SR.SHIPPING_INSTRUCTION_ID = SI.SHIPPING_INSTRUCTION_ID
+		AND SR.BATCH_ID = lv_batch_id 
+		AND SI.BATCH_ID = lv_batch_id 
+		 
+		INNER JOIN
+		UDL.UDL_SI US
+		ON US.SOURCE_SI_ID = SR.SHIPPING_INSTRUCTION_ID 
+		AND SI.LAST_MODIFIED_DATE = US.SOURCE_REVISION_DATE
+		AND US.STATUS_DESC in ('Original','Amendment')
+		AND US.DATA_SOURCE = 'LEGACY'
+		
+		LEFT OUTER JOIN
+		STG_INTTRA.STG_ETL_DATA_MAP EDM
+		ON SR.REFERENCE_TYPE_ID = EDM.VALUE 
+		AND EDM.ETL_DOMAIN_ID = 7 
+		AND EDM.TABLE_NAME = 'SI_REFERENCE_TYPE'
+		 
+	     );
+	
+	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  WHEN ERRORS  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_REFERENCE';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_reference_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_reference_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_reference_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_security_detail_legacy(integer, integer)
+
+DROP FUNCTION if exists udl.fn_insert_udl_si_security_detail_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_security_detail_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2;
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SECURITY_DETAIL
+             (
+		SECURITY_DETAIL_ID
+		,SECURITY_ID
+		,COMPANY_ID
+		,PARTITION_DATE 
+		,INSERTED_PROCESS_ID
+		,INSERTED_DATE
+		,UPDATED_PROCESS_ID
+		,UPDATED_DATE
+	     )
+
+   	     (
+		SELECT 	
+		NEXTVAL('UDL.UDL_SECURITY_DETAIL_SEQ') 
+		,UDS.SECURITY_ID
+		,SEC.COMPANY_ID
+ 		,SEC.CREATION_DATE 
+		,lv_process_id
+		,CURRENT_TIMESTAMP 
+		,lv_process_id
+		,CURRENT_TIMESTAMP 
+
+		FROM 
+		(
+		SELECT
+		    SECURITY_CODE
+                    ,MAX(SHIP_INSTN.CREATION_DATE) AS CREATION_DATE
+                    ,SI_CMPNY.COMPANY_ID AS COMPANY_ID 
+
+		FROM STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		INNER JOIN 
+		(Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN 
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY.COMPANY_ID IS NOT NULL
+		AND SI_CMPNY.BATCH_ID=lv_batch_id
+		AND SHIP_INSTN.BATCH_ID=lv_batch_id
+
+		LEFT OUTER JOIN 
+			(
+			SELECT 
+			    A.SHIPPING_INSTRUCTION_ID
+                   	    ,'_' || TRIM (TRAILING '_' FROM STRING_AGG(A.COMPANY_ID,'_' ORDER BY A.COMPANY_ID )) SECURITY_CODE
+			FROM 
+			   (
+		           SELECT 
+			       DISTINCT COMPANY_ID
+			       ,SHIP_INSTN.SHIPPING_INSTRUCTION_ID 
+			   FROM STG_INTTRA.STG_SHIPPING_INSTRUCTION SHIP_INSTN
+			   INNER JOIN
+			   STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+			   ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+			   AND SI_CMPNY.COMPANY_ID IS NOT NULL
+			   AND SI_CMPNY.BATCH_ID=lv_batch_id
+			   AND SHIP_INSTN.BATCH_ID=lv_batch_id
+			   )A 
+			GROUP BY A.SHIPPING_INSTRUCTION_ID
+			)B 
+		ON SI_CMPNY.SHIPPING_INSTRUCTION_ID=B.SHIPPING_INSTRUCTION_ID
+
+		GROUP BY SECURITY_CODE
+			 ,COMPANY_ID
+		)SEC
+
+		INNER JOIN 
+		UDL.UDL_SECURITY UDS
+		ON UDS.SECURITY_CODE=SEC.SECURITY_CODE 
+
+		LEFT OUTER JOIN 
+		UDL.UDL_SECURITY_DETAIL USD 
+                ON SEC.COMPANY_ID = USD.COMPANY_ID
+                AND UDS.SECURITY_ID = USD.SECURITY_ID
+		WHERE USD.COMPANY_ID IS NULL
+
+	     );
+
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SECURITY_DETAIL';
+	RETURN lv_insrt_rowcnt;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_security_detail_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_security_detail_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_security_detail_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_security_legacy(integer, integer)
+
+DROP FUNCTION if exists udl.fn_insert_udl_si_security_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_security_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2; 
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SECURITY
+	     (
+		SECURITY_ID	
+		,SECURITY_CODE
+		,SECURITY_ROLE_CODE		
+		,COMPANY_COUNT	
+		,SECURITY_CODE_HASH		
+		,SECURITY_ROLE_CODE_HASH	
+		,SOURCE_CREATION_DATE
+		,PARTITION_DATE      	
+		,INSERTED_PROCESS_ID	
+		,INSERTED_DATE	
+		,UPDATED_PROCESS_ID	
+		,UPDATED_DATE	
+	     )
+		
+	     (
+		SELECT 	
+		NEXTVAL('UDL.UDL_SECURITY_SEQ') 
+		,SEC.SECURITY_CODE
+		,SEC.SECURITY_ROLE_CODE
+		,SEC.COMPANY_COUNT
+		,MD5(SEC.SECURITY_CODE)
+		,MD5(SEC.SECURITY_ROLE_CODE)
+		,CURRENT_TIMESTAMP 
+		,SEC.CREATION_DATE   
+		,lv_process_id
+		,CURRENT_TIMESTAMP 
+		,lv_process_id
+		,CURRENT_TIMESTAMP
+
+		FROM 
+		(
+		SELECT
+		    SECURITY_CODE
+                    ,SECURITY_ROLE_CODE
+                    ,MAX(COMPANY_COUNT) AS COMPANY_COUNT
+            	    ,MAX(SHIP_INSTN.CREATION_DATE) AS CREATION_DATE
+		FROM STG_INTTRA.STG_SI_COMPANY SI_CMPNY
+		INNER JOIN 
+		(Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHIP_INSTN 
+		ON SHIP_INSTN.SHIPPING_INSTRUCTION_ID = SI_CMPNY.SHIPPING_INSTRUCTION_ID
+		AND SI_CMPNY.BATCH_ID=lv_batch_id
+		AND SHIP_INSTN.BATCH_ID=lv_batch_id
+		INNER JOIN 
+			(
+		     	SELECT 
+			   A.SHIPPING_INSTRUCTION_ID
+                   	   ,'_' || TRIM (TRAILING '_' FROM STRING_AGG(A.COMPANY_ID,'_' ORDER BY A.COMPANY_ID )) SECURITY_CODE
+			FROM 
+			   (
+		           SELECT 
+			       DISTINCT SC.COMPANY_ID
+			       ,SHI.SHIPPING_INSTRUCTION_ID 
+			   FROM STG_INTTRA.STG_SHIPPING_INSTRUCTION SHI
+			   INNER JOIN
+			   STG_INTTRA.STG_SI_COMPANY SC
+			   ON SHI.SHIPPING_INSTRUCTION_ID = SC.SHIPPING_INSTRUCTION_ID
+			   AND SC.COMPANY_ID IS NOT NULL
+			   AND SC.BATCH_ID=lv_batch_id
+			   AND SHI.BATCH_ID=lv_batch_id
+			   )A 
+			GROUP BY A.SHIPPING_INSTRUCTION_ID
+			)SEC_CODE		
+		ON 	SHIP_INSTN.SHIPPING_INSTRUCTION_ID=SEC_CODE.SHIPPING_INSTRUCTION_ID	
+		INNER JOIN 
+			(
+			SELECT SI2.SHIPPING_INSTRUCTION_ID,
+			TRIM(TRAILING '_' FROM STRING_AGG(SI2.COMPANY_ID||'_'||SI2.DESCRIPTION,'_' ORDER BY SI2.COMPANY_ID,SI2.DESCRIPTION)) AS SECURITY_ROLE_CODE
+			FROM(
+			     SELECT DISTINCT SI1.COMPANY_ID,SI1.SHIPPING_INSTRUCTION_ID
+			     	,ACT_TYPE.DESCRIPTION 
+			     FROM
+				(
+		           SELECT 
+			       DISTINCT COMPANY_ID
+			       ,SHIP.SHIPPING_INSTRUCTION_ID
+			       ,SIC.ACTIVITY_TYPE_ID 
+			   FROM STG_INTTRA.STG_SHIPPING_INSTRUCTION SHIP
+			   INNER JOIN
+			   STG_INTTRA.STG_SI_COMPANY SIC
+			   ON SHIP.SHIPPING_INSTRUCTION_ID = SIC.SHIPPING_INSTRUCTION_ID
+			   AND SIC.COMPANY_ID IS NOT NULL
+			   AND SIC.BATCH_ID=lv_batch_id
+			   AND SHIP.BATCH_ID=lv_batch_id
+				) SI1
+			INNER JOIN 
+			   STG_INTTRA.STG_SI_ACTIVITY_TYPE ACT_TYPE
+			   ON ACT_TYPE.ACTIVITY_TYPE_ID  = SI1.ACTIVITY_TYPE_ID
+			)SI2
+			GROUP BY SI2.SHIPPING_INSTRUCTION_ID
+			)SEC_ROLE 
+		ON 	SEC_ROLE.SHIPPING_INSTRUCTION_ID=SHIP_INSTN.SHIPPING_INSTRUCTION_ID	
+		INNER JOIN 
+			(
+			SELECT CNT.SHIPPING_INSTRUCTION_ID,COUNT(CNT.*) AS COMPANY_COUNT FROM 
+			(
+		           SELECT 
+			       DISTINCT COMPANY_ID
+			       ,SHIP1.SHIPPING_INSTRUCTION_ID 
+			   FROM STG_INTTRA.STG_SHIPPING_INSTRUCTION SHIP1
+			   INNER JOIN
+			   STG_INTTRA.STG_SI_COMPANY SIC1
+			   ON SHIP1.SHIPPING_INSTRUCTION_ID = SIC1.SHIPPING_INSTRUCTION_ID
+			   AND SIC1.COMPANY_ID IS NOT NULL
+			   AND SIC1.BATCH_ID=lv_batch_id
+			   AND SHIP1.BATCH_ID=lv_batch_id
+			)CNT 
+			  GROUP BY CNT.SHIPPING_INSTRUCTION_ID
+			)CONT
+		ON 	CONT.SHIPPING_INSTRUCTION_ID=SHIP_INSTN.SHIPPING_INSTRUCTION_ID
+		GROUP BY 
+			SECURITY_CODE ,SECURITY_ROLE_CODE
+		)SEC
+                LEFT OUTER JOIN 
+			UDL.UDL_SECURITY UDLSEC 
+                ON 	SEC.SECURITY_CODE = UDLSEC.SECURITY_CODE
+                AND 	SEC.SECURITY_ROLE_CODE = UDLSEC.SECURITY_ROLE_CODE
+		WHERE 	UDLSEC.SECURITY_CODE IS NULL
+	     );
+	
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SECURITY';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_security_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_security_legacy(integer, integer) TO public;
+GRANT EXECUTE ON FUNCTION udl.fn_insert_udl_si_security_legacy(integer, integer) TO edwudl_prod;
+
+
+-- Function: udl.fn_insert_udl_si_line_item_reference_legacy(integer, integer)
+
+-- DROP FUNCTION udl.fn_insert_udl_si_line_item_reference_legacy(integer, integer);
+
+CREATE OR REPLACE FUNCTION udl.fn_insert_udl_si_line_item_reference_legacy(p_batch_id integer, p_process_id integer)
+  RETURNS integer AS
+$BODY$
+
+DECLARE 
+lv_insrt_rowcnt INT := -1;
+lv_error_msg  TEXT;
+lv_batch_id ALIAS FOR $1;
+lv_process_id ALIAS FOR $2; 
+
+BEGIN
+
+/*  Inserting to the UDL Table  */
+
+	INSERT INTO UDL.UDL_SI_LINE_ITEM_REFERENCE
+	     (
+		UDL_SI_LINE_ITEM_REFERENCE_ID,
+		UDL_SI_LINE_ITEM_ID,
+		UDL_SI_ID,
+		SOURCE_LINE_ITEM_REFERENCE_ID,
+		SOURCE_LINE_ITEM_ID,
+		LINE_ITEM_REFERENCE_TYPE_ID,
+		LINE_ITEM_REFERENCE_TYPE_DESC,
+		VALUE,
+		ISSUANCE_DATE,
+		EXPIRATION_DATE,
+		PARTITION_DATE,
+		INSERTED_PROCESS_ID,
+		INSERTED_DATE,
+		UPDATED_PROCESS_ID,
+		UPDATED_DATE
+	     )
+		
+	     (SELECT
+	        NEXTVAL('UDL.UDL_SI_LINE_ITEM_REFERENCE_SEQ'),
+	        A.UDL_SI_LINE_ITEM_ID,
+		A.UDL_SI_ID,
+		NULL,
+		NULL,
+		NULL,
+		A.REF_TYPE,
+		A.REF_VALUE,
+		NULL,
+		NULL,
+		A.CREATION_DATE,
+		lv_process_id,
+		CURRENT_TIMESTAMP,
+		lv_process_id,
+		CURRENT_TIMESTAMP
+		FROM
+		(	(SELECT 				  
+			USLI.UDL_SI_LINE_ITEM_ID,
+			SI.UDL_SI_ID,
+			'TLI_NUMBER' REF_TYPE,
+			SC.TLI_NUMBER REF_VALUE,
+			SHI.CREATION_DATE
+			FROM 
+				(Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHI
+			INNER JOIN 
+				STG_INTTRA.STG_SI_COMMODITY SC
+			ON 	SC.SHIPPING_INSTRUCTION_ID = SHI.SHIPPING_INSTRUCTION_ID
+			AND	SHI.BATCH_ID = lv_batch_id
+			AND	SC.BATCH_ID = lv_batch_id
+			INNER JOIN
+				UDL.UDL_SI_LINE_ITEM USLI
+			ON	SC.COMMODITY_ID = USLI.SOURCE_LINE_ITEM_ID
+			INNER JOIN
+				UDL.UDL_SI SI
+			ON	SC.SHIPPING_INSTRUCTION_ID = SI.SOURCE_SI_ID
+			AND	USLI.UDL_SI_ID = SI.UDL_SI_ID
+			AND     SI.SOURCE_REVISION_DATE = SHI.LAST_MODIFIED_DATE 
+	                AND     SI.STATUS_DESC in ('Original','Amendment')
+			AND	SI.DATA_SOURCE = 'LEGACY'
+	                )
+		UNION ALL
+			(SELECT 	
+			USLI.UDL_SI_LINE_ITEM_ID,
+			SI.UDL_SI_ID,
+			'EXPORT_REGISTRY_NUMBER' REF_TYPE,
+			SC.EXPORT_REGISTRY_NUMBER REF_VALUE,
+			SHI.CREATION_DATE
+			FROM 
+				(Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHI
+			INNER JOIN 
+				STG_INTTRA.STG_SI_COMMODITY SC
+			ON 	SC.SHIPPING_INSTRUCTION_ID = SHI.SHIPPING_INSTRUCTION_ID
+			AND	SHI.BATCH_ID = lv_batch_id
+			AND	SC.BATCH_ID = lv_batch_id			
+			INNER JOIN
+				UDL.UDL_SI_LINE_ITEM USLI
+			ON	SC.COMMODITY_ID = USLI.SOURCE_LINE_ITEM_ID
+			INNER JOIN
+				UDL.UDL_SI SI
+			ON	SC.SHIPPING_INSTRUCTION_ID = SI.SOURCE_SI_ID
+			AND	USLI.UDL_SI_ID = SI.UDL_SI_ID			
+			AND     SI.SOURCE_REVISION_DATE = SHI.LAST_MODIFIED_DATE 
+	                AND     SI.STATUS_DESC in ('Original','Amendment')
+			AND	SI.DATA_SOURCE = 'LEGACY'
+			)
+		UNION ALL
+			(SELECT 	
+			USLI.UDL_SI_LINE_ITEM_ID,
+			SI.UDL_SI_ID,
+			'HOUSE_BROKER_REFERENCE' REF_TYPE,
+			SC.HOUSE_BROKER_REFERENCE REF_VALUE,
+			SHI.CREATION_DATE
+			FROM 
+				(Select distinct * from stg_inttra.stg_shipping_instruction si where si.batch_id = lv_batch_id) SHI
+			INNER JOIN 
+				STG_INTTRA.STG_SI_COMMODITY SC
+			ON 	SC.SHIPPING_INSTRUCTION_ID = SHI.SHIPPING_INSTRUCTION_ID
+			AND	SHI.BATCH_ID = lv_batch_id
+			AND	SC.BATCH_ID = lv_batch_id			
+			INNER JOIN
+				UDL.UDL_SI_LINE_ITEM USLI
+			ON	SC.COMMODITY_ID = USLI.SOURCE_LINE_ITEM_ID
+			INNER JOIN
+				UDL.UDL_SI SI
+			ON	SC.SHIPPING_INSTRUCTION_ID = SI.SOURCE_SI_ID
+			AND	USLI.UDL_SI_ID = SI.UDL_SI_ID			
+			AND     SI.SOURCE_REVISION_DATE = SHI.LAST_MODIFIED_DATE 
+	                AND     SI.STATUS_DESC in ('Original','Amendment')
+	                AND	SI.DATA_SOURCE = 'LEGACY'
+	                )
+		) A	
+	     );
+	
+   	GET DIAGNOSTICS lv_insrt_rowcnt = ROW_COUNT;
+	RETURN lv_insrt_rowcnt;
+
+/*  When Errors  */
+
+	EXCEPTION WHEN OTHERS THEN lv_error_msg = SQLERRM;
+	UPDATE EDW_AUDIT.ELT_PROCESS_AUDIT
+	SET ERROR_TEXT = lv_error_msg
+	WHERE BATCH_ID = lv_batch_id AND TARGET_NAME = 'UDL_SI_LINE_ITEM_REFERENCE';
+	RETURN -1;
+	END;
+
+$BODY$
+  LANGUAGE plpgsql VOLATILE;
+ALTER FUNCTION udl.fn_insert_udl_si_line_item_reference_legacy(integer, integer)
+  OWNER TO edwudl_prod;
+
+
